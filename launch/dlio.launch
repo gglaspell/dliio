@@ -37,6 +37,8 @@
     <remap from="~kf_cloud" to="dlio/odom_node/pointcloud/keyframe"/>
     <remap from="~deskewed" to="dlio/odom_node/pointcloud/deskewed"/>
 
+    <remap from="~pose_optmap" to="dlio/odom_node/optmap_pose"/>
+
   </node>
 
   <!-- DLIO Mapping Node -->

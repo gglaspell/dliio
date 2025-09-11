@@ -82,6 +82,11 @@ private:
 
   void debug();
 
+  // OptMap
+  void publishOptmapPose();
+  ros::Publisher pose_optmap_pub;
+  int curr_deskewed_seq;
+
   ros::NodeHandle nh;
   ros::Timer publish_timer;
 

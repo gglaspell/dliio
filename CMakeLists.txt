@@ -47,6 +47,12 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
 )
 
+add_message_files(
+  DIRECTORY msg
+  FILES
+  OptmapPose.msg
+)
+
 add_service_files(
   DIRECTORY srv
   FILES
