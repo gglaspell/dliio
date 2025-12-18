@@ -1788,9 +1788,12 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
     pcl::transformPointCloud (*raw_keyframe, *transformed_keyframe, T);
 
     std::shared_ptr<nano_gicp::CovarianceList> transformed_covariances (std::make_shared<nano_gicp::CovarianceList>(raw_covariances->size()));
-    std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
-                   [&Td](Eigen::Matrix4d cov) { return Td * cov * Td.transpose(); });
+    // std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
+                   // [&Td](Eigen::Matrix4d cov) { return Td * cov * Td.transpose(); });
 
+    std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
+               [&Tf](const Eigen::Matrix4f& cov) { return Tf * cov * Tf.transpose(); });
+    
     ++this->num_processed_keyframes;
 
     lock.lock();
