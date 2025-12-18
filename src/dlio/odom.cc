@@ -31,6 +31,12 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->deskew_status = false;
   this->deskew_size = 0;
 
+  double photometricWeight = this->declare_parameter<double>("odom.gicp.photometricWeight", 0.0);
+  int gradientKNeighbors = this->declare_parameter<int>("odom.gicp.gradientKNeighbors", 10);
+
+  this->gicp.setPhotometricWeight(photometricWeight);
+  this->gicp.setGradientKNeighbors(gradientKNeighbors);
+  
   this->lidar_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   auto lidar_sub_opt = rclcpp::SubscriptionOptions();
   lidar_sub_opt.callback_group = this->lidar_cb_group;
