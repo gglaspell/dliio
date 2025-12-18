@@ -738,7 +738,9 @@ void dlio::OdomNode::initializeInputTarget() {
   // keep history of keyframes
   this->keyframes.push_back(std::make_pair(std::make_pair(this->lidarPose.p, this->lidarPose.q), this->current_scan));
   this->keyframe_timestamps.push_back(this->scan_header_stamp);
-  this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
+  // this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
+  // this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
+  this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
   this->keyframe_transformations.push_back(this->T_corr);
 
 }
@@ -1615,7 +1617,9 @@ void dlio::OdomNode::updateKeyframes() {
     std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
     this->keyframes.push_back(std::make_pair(std::make_pair(this->lidarPose.p, this->lidarPose.q), this->current_scan));
     this->keyframe_timestamps.push_back(this->scan_header_stamp);
-    this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
+    // this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
+    // this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
+    this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
     this->keyframe_transformations.push_back(this->T_corr);
     lock.unlock();
 
