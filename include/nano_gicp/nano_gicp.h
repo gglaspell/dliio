@@ -41,6 +41,9 @@ public:
   void setCorrespondenceRandomness(int k);
   void setRegularizationMethod(RegularizationMethod method);
 
+  // FIX: Added back with float type
+  void setMaxCorrespondenceDistance(float corr);
+
   void setPhotometricWeight(float weight) {
     photometric_weight_ = weight;
   }
@@ -56,7 +59,7 @@ protected:
   virtual void computeTransformation(PointCloudSource& output, const Eigen::Matrix4f& guess) override;
 
   // Internal methods using float
-  double linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b);
+  float linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b);
   void update_correspondences(const Eigen::Isometry3f& trans);
 
   template<typename PointT>
@@ -70,6 +73,9 @@ protected:
   using pcl::Registration<PointSource, PointTarget>::input_;
   using pcl::Registration<PointSource, PointTarget>::target_;
   using pcl::Registration<PointSource, PointTarget>::corr_dist_threshold_;
+  using pcl::Registration<PointSource, PointTarget>::final_transformation_;
+  using pcl::Registration<PointSource, PointTarget>::max_iterations_;
+
 
   int num_threads_;
   int k_correspondences_;
