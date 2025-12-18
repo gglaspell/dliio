@@ -1782,17 +1782,16 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
     Eigen::Matrix4f T = this->keyframe_transformations[i];
     lock.unlock();
 
-    Eigen::Matrix4d Td = T.cast<double>();
+  Eigen::Matrix4f Tf = T; // T is already the correct float type
 
-    pcl::PointCloud<PointType>::Ptr transformed_keyframe = std::make_shared<pcl::PointCloud<PointType>>();
-    pcl::transformPointCloud (*raw_keyframe, *transformed_keyframe, T);
+  pcl::PointCloud<PointType>::Ptr transformed_keyframe = std::make_shared<pcl::PointCloud<PointType>>();
+  pcl::transformPointCloud (*raw_keyframe, *transformed_keyframe, Tf);
 
-    std::shared_ptr<nano_gicp::CovarianceList> transformed_covariances (std::make_shared<nano_gicp::CovarianceList>(raw_covariances->size()));
-    // std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
-                   // [&Td](Eigen::Matrix4d cov) { return Td * cov * Td.transpose(); });
+  std::shared_ptr<nano_gicp::CovarianceList> transformed_covariances (std::make_shared<nano_gicp::CovarianceList>(raw_covariances->size()));
 
-    std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
+  std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
                [&Tf](const Eigen::Matrix4f& cov) { return Tf * cov * Tf.transpose(); });
+
     
     ++this->num_processed_keyframes;
 
