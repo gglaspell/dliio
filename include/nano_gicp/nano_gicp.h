@@ -40,9 +40,15 @@ public:
   void setNumThreads(int n);
   void setCorrespondenceRandomness(int k);
   void setRegularizationMethod(RegularizationMethod method);
-
-  // FIX: Added back with float type
   void setMaxCorrespondenceDistance(float corr);
+
+  // --- START OF FIX: Add missing functions from original API ---
+  void setTransformationEpsilon(float eps);
+  void setRotationEpsilon(float eps);
+  void setInitialLambdaFactor(float lambda);
+
+  const CovarianceList& getSourceCovariances() const;
+  // --- END OF FIX ---
 
   void setPhotometricWeight(float weight) {
     photometric_weight_ = weight;
@@ -54,11 +60,14 @@ public:
 
   virtual void setInputSource(const PointCloudSourceConstPtr& cloud) override;
   virtual void setInputTarget(const PointCloudTargetConstPtr& cloud) override;
+  
+  // --- START OF FIX: Add public member for density ---
+  float source_density_ = 0.0f;
+  // --- END OF FIX ---
 
 protected:
   virtual void computeTransformation(PointCloudSource& output, const Eigen::Matrix4f& guess) override;
 
-  // Internal methods using float
   float linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b);
   void update_correspondences(const Eigen::Isometry3f& trans);
 
@@ -75,7 +84,9 @@ protected:
   using pcl::Registration<PointSource, PointTarget>::corr_dist_threshold_;
   using pcl::Registration<PointSource, PointTarget>::final_transformation_;
   using pcl::Registration<PointSource, PointTarget>::max_iterations_;
-
+  // --- START OF FIX: Add access to base class members ---
+  using pcl::Registration<PointSource, PointTarget>::transformation_epsilon_;
+  // --- END OF FIX ---
 
   int num_threads_;
   int k_correspondences_;
