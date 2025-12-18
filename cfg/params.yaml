@@ -48,6 +48,9 @@
     odom/gicp/rotationEpsilon: 0.01
     odom/gicp/initLambdaFactor: 1e-9
 
+    odom/gicp/photometricWeight: 0.1
+    odom/gicp/gradientKNeighbors: 10
+    
     odom/geo/Kp: 4.5
     odom/geo/Kv: 11.25
     odom/geo/Kq: 4.0
