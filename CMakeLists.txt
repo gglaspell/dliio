@@ -21,7 +21,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 
-find_package(PCL REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common registration)
 find_package( Eigen3 REQUIRED )
 find_package(Threads REQUIRED)
 
@@ -60,8 +60,9 @@ add_library(nano_gicp STATIC
   src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
+
 target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
-ament_target_dependencies(nano_gicp)
+
 
 # Odometry Node
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
