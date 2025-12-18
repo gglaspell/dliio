@@ -131,3 +131,9 @@ if(OPENMP_FOUND)
 endif()
 
 file(WRITE ${CMAKE_BINARY_DIR}/test_cpuid.cpp "#include <cpuid.h>")
+try_compile(HAS_CPUID ${CMAKE_BINARY_DIR} ${CMAKE_BINARY_DIR}/test_cpuid.cpp)
+file(REMOVE ${CMAKE_BINARY_DIR}/test_cpuid.cpp)
+
+if(HAS_CPUID)
+  add_compile_definitions(HAS_CPUID)
+endif()
