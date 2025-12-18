@@ -89,6 +89,23 @@ public:
   void setMaxCorrespondenceDistance(double corr);
   void setRegularizationMethod(RegularizationMethod method);
 
+
+  /**
+   * @brief Set the weight for the photometric error term in the optimization.
+   * @param weight  The weight for the photometric error. Set to 0.0 to disable.
+   */
+  void setPhotometricWeight(double weight) {
+    photometric_weight_ = weight;
+  }
+
+  /**
+   * @brief Sets the number of neighbors to use for spatial intensity gradient estimation.
+   * @param k Number of nearest neighbors.
+   */
+  void setGradientKNeighbors(int k) {
+    gradient_k_neighbors_ = k;
+  }
+
   virtual void swapSourceAndTarget() override;
   virtual void clearSource() override;
   virtual void clearTarget() override;
@@ -124,6 +141,19 @@ protected:
   template<typename PointT>
   bool calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances, float& density);
 
+  /**
+   * @brief Estimates the 3D spatial intensity gradient at a point in the target cloud.
+   * @param target_index  Index of the point in the target cloud.
+   * @param gradient      Output 3D gradient vector.
+   * @return              True if the gradient was estimated successfully, false otherwise.
+   */
+  bool estimate_spatial_intensity_gradient(int target_index, Eigen::Vector3d& gradient) const;
+
+  /**
+   * @brief Pre-computes intensity gradients for all points in the target cloud.
+   */
+  void calculate_target_intensity_gradients();
+
 public:
   std::shared_ptr<const nanoflann::KdTreeFLANN<PointSource>> source_kdtree_;
   std::shared_ptr<const nanoflann::KdTreeFLANN<PointTarget>> target_kdtree_;
@@ -147,6 +177,17 @@ protected:
 
   std::vector<int> correspondences_;
   std::vector<float> sq_distances_;
+
+  // Weight for the photometric error term
+  double photometric_weight_ = 0.0;
+
+  // Number of neighbors for gradient estimation
+  int gradient_k_neighbors_ = 10;
+  
+  // Pre-computed intensity gradients for the target cloud
+  std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d>> target_intensity_gradients_;
+  
+
 };
 }  // namespace nano_gicp
 
