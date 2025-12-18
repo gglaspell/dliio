@@ -39,6 +39,12 @@ protected:
   using LsqRegistration<PointSource, PointTarget>::source_covs_;
   using LsqRegistration<PointSource, PointTarget>::target_covs_;
 
+  // --- START OF FIX ---
+  // Bring dependent types from the base class into this class's scope
+  using typename LsqRegistration<PointSource, PointTarget>::CovarianceList;
+  using typename LsqRegistration<PointSource, PointTarget>::MahalanobisList;
+  // --- END OF FIX ---
+
 public:
   NanoGICP();
   virtual ~NanoGICP() override;
