@@ -13,24 +13,25 @@
 cmake_minimum_required(VERSION 3.12.4)
 project(direct_lidar_inertial_odometry)
 
-find_package(rosidl_default_generators REQUIRED)
+# Find all necessary ROS 2 and system packages
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(pcl_conversions REQUIRED)
 
-# --- START OF FIX 1 ---
-# Find the specific PCL components we need
+# --- START OF FIX: Find specific PCL components ---
 find_package(PCL REQUIRED COMPONENTS common registration)
-# --- END OF FIX 1 ---
+# --- END OF FIX ---
 
-find_package( Eigen3 REQUIRED )
+find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
 find_package(OpenMP)
-
 
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_STANDARD 17)
@@ -42,7 +43,7 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 rosidl_generate_interfaces(
     ${PROJECT_NAME}
-        srv/SavePCD.srv
+    srv/SavePCD.srv
     DEPENDENCIES
 )
 
@@ -59,56 +60,66 @@ include_directories(SYSTEM)
 add_library(nanoflann STATIC
   src/nano_gicp/nanoflann.cc
 )
-# --- START OF FIX 2.1 ---
-# Use modern CMake targets for linking
+# Use modern CMake target for linking
 target_link_libraries(nanoflann PUBLIC PCL::common)
-# --- END OF FIX 2.1 ---
 ament_target_dependencies(nanoflann)
 
 
 # NanoGICP
 add_library(nano_gicp STATIC
   # lsq_registration is not used by the new NanoGICP
-  # src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
-# --- START OF FIX 2.2 ---
-# Use modern CMake targets for linking. PUBLIC propagates the dependency.
-target_link_libraries(nano_gicp PUBLIC PCL::registration ${OpenMP_LIBS} nanoflann)
-# --- END OF FIX 2.2 ---
+# Use modern CMake target for linking. PUBLIC propagates the dependency.
+target_link_libraries(nano_gicp PUBLIC
+  PCL::registration
+  PCL::common
+  ${OpenMP_LIBS}
+  nanoflann
+)
 ament_target_dependencies(nano_gicp)
 
 
 # Odometry Node
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
-# --- START OF FIX 2.3 ---
-# Link the executable against the required PCL targets directly.
+# --- START OF FIX: Combine all dependencies into one command ---
 target_link_libraries(dlio_odom_node PRIVATE
-  PCL::common
-  PCL::registration
-  ${OpenMP_LIBS}
-  Threads::Threads
-  nano_gicp
+    Threads::Threads
+    nano_gicp
+    ${rclcpp_LIBRARIES}
+    ${sensor_msgs_LIBRARIES}
+    ${geometry_msgs_LIBRARIES}
+    ${nav_msgs_LIBRARIES}
+    ${pcl_ros_LIBRARIES}
+    ${tf2_ros_LIBRARIES}
+    ${pcl_conversions_LIBRARIES}
 )
-# --- END OF FIX 2.3 ---
-ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs")
+# The ament_target_dependencies call is no longer needed
+# ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs")
+# --- END OF FIX ---
 
 
 # Mapping Node
 add_executable (dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
-# --- START OF FIX 2.4 ---
-# Also update the map node for consistency
-target_link_libraries(dlio_map_node PRIVATE PCL::common PCL::registration ${cpp_typesupport_target})
-# --- END OF FIX 2.4 ---
-ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp")
-
+# --- START OF FIX: Combine all dependencies into one command ---
+target_link_libraries(dlio_map_node PRIVATE
+  ${cpp_typesupport_target}
+  ${rclcpp_LIBRARIES}
+  ${pcl_ros_LIBRARIES}
+  ${tf2_ros_LIBRARIES}
+  ${pcl_conversions_LIBRARIES}
+  PCL::common
+  PCL::registration
+)
+# The ament_target_dependencies call is no longer needed
+# ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp")
+# --- END OF FIX ---
 
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME} nano_gicp nanoflann)
 ament_export_dependencies(rclcpp std_msgs sensor_msgs geometry_msgs pcl_ros)
 
 ament_package()
-
 
 # Binaries
 install( TARGETS dlio_odom_node dlio_map_node
@@ -119,7 +130,6 @@ install( DIRECTORY cfg launch
          DESTINATION share/${PROJECT_NAME}
 )
 
-# Use C++17
 add_compile_options(-std=c++17)
 
 link_directories(${PCL_LIBRARY_DIRS})
