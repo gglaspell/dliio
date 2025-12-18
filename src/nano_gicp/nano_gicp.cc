@@ -8,7 +8,6 @@ template class nano_gicp::NanoGICP<dlio::Point, dlio::Point>;
 
 namespace nano_gicp {
 
-// FIX: Make the skew function generic to accept Eigen expressions (like .head<3>())
 template<typename Derived>
 Eigen::Matrix<typename Derived::Scalar, 3, 3> skew(const Eigen::MatrixBase<Derived>& v) {
     Eigen::Matrix<typename Derived::Scalar, 3, 3> m;
@@ -29,7 +28,8 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
   this->k_correspondences_ = 20;
   this->corr_dist_threshold_ = std::numeric_limits<float>::max();
   this->regularization_method_ = RegularizationMethod::PLANE;
-  this->max_iterations_ = 64; // Default PCL value
+  this->max_iterations_ = 64;
+  this->transformation_epsilon_ = 1e-4; // Default value
 }
 
 template <typename PointSource, typename PointTarget>
@@ -50,6 +50,27 @@ void NanoGICP<PointSource, PointTarget>::setMaxCorrespondenceDistance(float corr
   this->corr_dist_threshold_ = corr;
 }
 
+// --- START OF FIX: Implement missing functions ---
+template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setTransformationEpsilon(float eps) {
+    this->transformation_epsilon_ = eps;
+}
+
+template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setRotationEpsilon(float eps) {
+    // DLIO used this, we'll just map it to the same parameter
+    this->transformation_epsilon_ = eps;
+}
+
+// Dummy function to satisfy the API, does nothing as we don't use LM
+template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setInitialLambdaFactor(float lambda) {}
+
+template <typename PointSource, typename PointTarget>
+const CovarianceList& NanoGICP<PointSource, PointTarget>::getSourceCovariances() const {
+    return source_covs_;
+}
+// --- END OF FIX ---
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setRegularizationMethod(RegularizationMethod method) {
@@ -139,14 +160,15 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(PointCloudSource&
             break;
         }
 
+        // Small increment
         Eigen::Isometry3f delta = Eigen::Isometry3f::Identity();
-        delta.prerotate(Eigen::AngleAxisf(dx[2], Eigen::Vector3f::UnitZ()));
-        delta.prerotate(Eigen::AngleAxisf(dx[1], Eigen::Vector3f::UnitY()));
-        delta.prerotate(Eigen::AngleAxisf(dx[0], Eigen::Vector3f::UnitX()));
+        delta.rotate(Eigen::AngleAxisf(dx(2), Eigen::Vector3f::UnitZ()));
+        delta.rotate(Eigen::AngleAxisf(dx(1), Eigen::Vector3f::UnitY()));
+        delta.rotate(Eigen::AngleAxisf(dx(0), Eigen::Vector3f::UnitX()));
         delta.pretranslate(dx.tail<3>());
         trans = delta * trans;
 
-        if (dx.norm() < 1e-4) {
+        if (dx.norm() < transformation_epsilon_) {
             break;
         }
     }
@@ -260,7 +282,6 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(const typename pc
         Eigen::Vector4f mean = neighbors.rowwise().mean();
         Eigen::Matrix4f cov = (neighbors.colwise() - mean) * (neighbors.colwise() - mean).transpose() / k_indices.size();
         
-        // Original dlio regularization
         Eigen::JacobiSVD<Eigen::Matrix3f> svd(cov.block<3, 3>(0, 0), Eigen::ComputeFullU | Eigen::ComputeFullV);
         Eigen::Vector3f values = Eigen::Vector3f::Ones() * 1e-3;
         values = svd.singularValues().array().max(values.array());
