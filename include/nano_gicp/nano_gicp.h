@@ -6,44 +6,32 @@
 #include <pcl/point_cloud.h>
 #include <pcl/registration/registration.h>
 
-#include "nano_gicp/lsq_registration.h"
 #include "nano_gicp/nanoflann_adaptor.h"
 
 namespace nano_gicp {
 
-template <typename PointT>
-using PointCloudPtr = typename pcl::PointCloud<PointT>::Ptr;
-template <typename PointT>
-using PointCloudConstPtr = typename pcl::PointCloud<PointT>::ConstPtr;
+// Define types with FLOAT precision
+using Covariance = Eigen::Matrix4f;
+using CovarianceList = std::vector<Covariance, Eigen::aligned_allocator<Covariance>>;
+using Mahalanobis = Eigen::Matrix4f;
+using MahalanobisList = std::vector<Mahalanobis, Eigen::aligned_allocator<Mahalanobis>>;
 
 enum class RegularizationMethod { NONE, MIN_EIG, NORMALIZED_MIN_EIG, PLANE, FROBENIUS };
 
 template<typename PointSource, typename PointTarget>
-class NanoGICP : public LsqRegistration<PointSource, PointTarget> {
+class NanoGICP : public pcl::Registration<PointSource, PointTarget> {
 
 public:
-  using Scalar = typename pcl::Registration<PointSource, PointTarget, double>::Scalar;
-  using Matrix4 = typename pcl::Registration<PointSource, PointTarget, double>::Matrix4;
-  using PointCloudSource = typename pcl::Registration<PointSource, PointTarget, double>::PointCloudSource;
+  using Ptr = std::shared_ptr<NanoGICP<PointSource, PointTarget>>;
+  using ConstPtr = std::shared_ptr<const NanoGICP<PointSource, PointTarget>>;
+
+  using PointCloudSource = typename pcl::Registration<PointSource, PointTarget>::PointCloudSource;
   using PointCloudSourcePtr = typename PointCloudSource::Ptr;
   using PointCloudSourceConstPtr = typename PointCloudSource::ConstPtr;
-  using PointCloudTarget = typename pcl::Registration<PointSource, PointTarget, double>::PointCloudTarget;
+
+  using PointCloudTarget = typename pcl::Registration<PointSource, PointTarget>::PointCloudTarget;
   using PointCloudTargetPtr = typename PointCloudTarget::Ptr;
   using PointCloudTargetConstPtr = typename PointCloudTarget::ConstPtr;
-
-protected:
-  using LsqRegistration<PointSource, PointTarget>::reg_name_;
-  using LsqRegistration<PointSource, PointTarget>::input_;
-  using LsqRegistration<PointSource, PointTarget>::target_;
-  using LsqRegistration<PointSource, PointTarget>::corr_dist_threshold_;
-  using LsqRegistration<PointSource, PointTarget>::source_covs_;
-  using LsqRegistration<PointSource, PointTarget>::target_covs_;
-
-  // --- START OF FIX ---
-  // Bring dependent types from the base class into this class's scope
-  using typename LsqRegistration<PointSource, PointTarget>::CovarianceList;
-  using typename LsqRegistration<PointSource, PointTarget>::MahalanobisList;
-  // --- END OF FIX ---
 
 public:
   NanoGICP();
@@ -51,10 +39,9 @@ public:
 
   void setNumThreads(int n);
   void setCorrespondenceRandomness(int k);
-  void setMaxCorrespondenceDistance(double corr);
   void setRegularizationMethod(RegularizationMethod method);
 
-  void setPhotometricWeight(double weight) {
+  void setPhotometricWeight(float weight) {
     photometric_weight_ = weight;
   }
 
@@ -66,36 +53,42 @@ public:
   virtual void setInputTarget(const PointCloudTargetConstPtr& cloud) override;
 
 protected:
-  virtual void computeTransformation(PointCloudSource& output, const Matrix4& guess) override;
+  virtual void computeTransformation(PointCloudSource& output, const Eigen::Matrix4f& guess) override;
 
-  virtual double linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b) override;
-
-  virtual double compute_error(const Eigen::Isometry3d& trans) override;
-
-  void update_correspondences(const Eigen::Isometry3d& trans);
+  // Internal methods using float
+  double linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b);
+  void update_correspondences(const Eigen::Isometry3f& trans);
 
   template<typename PointT>
   bool calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances);
 
-  bool estimate_spatial_intensity_gradient(int target_index, Eigen::Vector3d& gradient) const;
-  
+  bool estimate_spatial_intensity_gradient(int target_index, Eigen::Vector3f& gradient) const;
   void calculate_target_intensity_gradients();
 
 protected:
+  using pcl::Registration<PointSource, PointTarget>::reg_name_;
+  using pcl::Registration<PointSource, PointTarget>::input_;
+  using pcl::Registration<PointSource, PointTarget>::target_;
+  using pcl::Registration<PointSource, PointTarget>::corr_dist_threshold_;
+
   int num_threads_;
   int k_correspondences_;
   RegularizationMethod regularization_method_;
 
   std::unique_ptr<nanoflann::KdTreeFLANN<PointSource>> input_kdtree_;
   std::unique_ptr<nanoflann::KdTreeFLANN<PointTarget>> target_kdtree_;
+
+  CovarianceList source_covs_;
+  CovarianceList target_covs_;
+
   std::vector<int> correspondences_;
-  std::vector<double> sq_distances_;
+  std::vector<float> sq_distances_;
   MahalanobisList mahalanobis_;
 
-  double photometric_weight_ = 0.0;
+  float photometric_weight_ = 0.0f;
   int gradient_k_neighbors_ = 10;
   
-  std::vector<Eigen::Vector3d, Eigen::aligned_allocator<Eigen::Vector3d>> target_intensity_gradients_;
+  std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> target_intensity_gradients_;
 };
 
 } // namespace nano_gicp
