@@ -81,7 +81,7 @@ void NanoGICP<PointSource, PointTarget>::setGradientKNeighbors(int k) {
 }
 
 template <typename PointSource, typename PointTarget>
-const typename nano_gicp::NanoGICP<PointSource, PointTarget>::CovarianceList& 
+const typename NanoGICP<PointSource, PointTarget>::CovarianceList& 
 NanoGICP<PointSource, PointTarget>::getSourceCovariances() const {
     return source_covs_;
 }
@@ -310,90 +310,3 @@ void NanoGICP<PointSource, PointTarget>::linearize(
         int target_index = correspondences_[i];
         
         if(target_index < 0) {
-            continue;
-        }
-        
-        const auto& source_pt = input_->at(i);
-        Eigen::Vector4f source_homogeneous = trans * source_pt.getVector4fMap();
-        Eigen::Vector3f transformed_source = source_homogeneous.head<3>();
-        
-        const auto& target_pt = target_->at(target_index);
-        Eigen::Vector3f target_pos = target_pt.getVector3fMap();
-        
-        // Geometric term
-        Eigen::Vector3f residual = transformed_source - target_pos;
-        Eigen::Matrix<float, 3, 6> J_geometric;
-        J_geometric.block<3, 3>(0, 0) = -skew(transformed_source);
-        J_geometric.block<3, 3>(0, 3) = Eigen::Matrix3f::Identity();
-        
-        Eigen::Matrix3f M = mahalanobis_[i].block<3, 3>(0, 0);
-        
-        H_private[thread_num] += J_geometric.transpose() * M * J_geometric;
-        b_private[thread_num] += J_geometric.transpose() * M * residual;
-        
-        // Photometric term
-        if (use_photometric && gradient_valid_[target_index]) {
-            float intensity_diff = source_pt.intensity - target_pt.intensity;
-            Eigen::Vector3f gradient = target_intensity_gradients_[target_index];
-            
-            if (gradient.norm() > 1e-6 && gradient.norm() < 100.0f) {
-                Eigen::Matrix<float, 1, 6> J_photometric;
-                J_photometric.block<1, 3>(0, 0) = -gradient.transpose() * skew(transformed_source);
-                J_photometric.block<1, 3>(0, 3) = gradient.transpose();
-                
-                float weight = photometric_weight_;
-                H_private[thread_num] += weight * J_photometric.transpose() * J_photometric;
-                b_private[thread_num] += weight * J_photometric.transpose() * intensity_diff;
-            }
-        }
-    }
-    
-    for(int i = 0; i < num_threads_; ++i) {
-        (*H) += H_private[i];
-        (*b) += b_private[i];
-    }
-}
-
-template <typename PointSource, typename PointTarget>
-template <typename PointT>
-void NanoGICP<PointSource, PointTarget>::calculate_covariances(
-    const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
-    nanoflann::KdTreeFLANN<PointT>& kdtree,
-    CovarianceList& covs) {
-    
-    covs.resize(cloud->size());
-    
-    #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
-    for(int i = 0; i < cloud->size(); ++i) {
-        std::vector<int> k_indices(k_correspondences_);
-        std::vector<float> k_sq_distances(k_correspondences_);
-        
-        kdtree.nearestKSearch(cloud->at(i), k_correspondences_, k_indices, k_sq_distances);
-        
-        Eigen::Matrix<float, 4, -1> neighbors(4, k_correspondences_);
-        for(int j = 0; j < k_indices.size(); ++j) {
-            neighbors.col(j) = cloud->at(k_indices[j]).getVector4fMap();
-        }
-        
-        neighbors.row(3).array() = 1.0f;
-        Eigen::Vector4f mean = neighbors.rowwise().mean();
-        Eigen::Matrix<float, 4, -1> centered = neighbors.colwise() - mean;
-        centered.row(3).array() = 0.0f;
-        
-        Eigen::Matrix4f cov = (centered * centered.transpose()) / static_cast<float>(k_correspondences_);
-        cov(3, 3) = 1.0;
-        
-        if(regularization_method_ == RegularizationMethod::PLANE) {
-            Eigen::JacobiSVD<Eigen::Matrix3f> svd(cov.block<3, 3>(0, 0), Eigen::ComputeFullU);
-            Eigen::Vector3f values = svd.singularValues();
-            values(2) = std::max(values(2), 0.001f);
-            cov.block<3, 3>(0, 0) = svd.matrixU() * values.asDiagonal() * svd.matrixU().transpose();
-        } else {
-            cov.block<3, 3>(0, 0) += Eigen::Matrix3f::Identity() * 0.001f;
-        }
-        
-        covs[i] = cov;
-    }
-}
-
-} // namespace nano_gicp
