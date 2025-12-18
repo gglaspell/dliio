@@ -1,22 +1,35 @@
 #include "nano_gicp/nano_gicp.h"
-#include "dlio/dlio.h" // <-- FIX 1: Add missing header
+#include "dlio/dlio.h"
 #include <omp.h>
 #include <Eigen/Dense>
+#include <pcl/common/transforms.h>
 
-// FIX 2: Correct template instantiation
 template class nano_gicp::NanoGICP<dlio::Point, dlio::Point>;
 
 namespace nano_gicp {
+
+// Helper to create skew-symmetric matrix from a 3D vector
+template<typename T>
+Eigen::Matrix<T, 3, 3> skew(const Eigen::Matrix<T, 3, 1>& v) {
+    Eigen::Matrix<T, 3, 3> m;
+    m.setZero();
+    m(0, 1) = -v(2);
+    m(0, 2) = v(1);
+    m(1, 0) = v(2);
+    m(1, 2) = -v(0);
+    m(2, 0) = -v(1);
+    m(2, 1) = v(0);
+    return m;
+}
 
 template <typename PointSource, typename PointTarget>
 NanoGICP<PointSource, PointTarget>::NanoGICP() {
   reg_name_ = "NanoGICP";
   this->num_threads_ = omp_get_max_threads();
   this->k_correspondences_ = 20;
-  this->corr_dist_threshold_ = std::numeric_limits<double>::max();
+  this->corr_dist_threshold_ = std::numeric_limits<float>::max();
   this->regularization_method_ = RegularizationMethod::PLANE;
-  this->photometric_weight_ = 0.0;
-  this->gradient_k_neighbors_ = 10;
+  this->max_iterations_ = 64; // Default PCL value
 }
 
 template <typename PointSource, typename PointTarget>
@@ -32,10 +45,12 @@ void NanoGICP<PointSource, PointTarget>::setCorrespondenceRandomness(int k) {
   this->k_correspondences_ = k;
 }
 
+// FIX: Definition now matches declaration
 template <typename PointSource, typename PointTarget>
-void NanoGICP<PointSource, PointTarget>::setMaxCorrespondenceDistance(double corr) {
+void NanoGICP<PointSource, PointTarget>::setMaxCorrespondenceDistance(float corr) {
   this->corr_dist_threshold_ = corr;
 }
+
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setRegularizationMethod(RegularizationMethod method) {
@@ -44,23 +59,28 @@ void NanoGICP<PointSource, PointTarget>::setRegularizationMethod(RegularizationM
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setInputSource(const PointCloudSourceConstPtr& cloud) {
-  if (input_ == cloud) {
-    return;
-  }
-  pcl::Registration<PointSource, PointTarget, double>::setInputSource(cloud);
-  // FIX 3: Initialize input_kdtree_ and dereference source_covs_
-  input_kdtree_.reset(new nanoflann::KdTreeFLANN<PointSource>(*cloud));
-  calculate_covariances(cloud, *input_kdtree_, *source_covs_);
+  // FIX: Call base class function correctly
+  pcl::Registration<PointSource, PointTarget>::setInputSource(cloud);
+  
+  // FIX: Correctly initialize K-d tree
+  input_kdtree_.reset(new nanoflann::KdTreeFLANN<PointSource>(false));
+  input_kdtree_->setInputCloud(cloud);
+  
+  // FIX: Pass vector directly, not with dereference operator *
+  calculate_covariances(cloud, *input_kdtree_, source_covs_);
 }
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setInputTarget(const PointCloudTargetConstPtr& cloud) {
-  if (target_ == cloud) {
-    return;
-  }
-  pcl::Registration<PointSource, PointTarget, double>::setInputTarget(cloud);
-  target_kdtree_.reset(new nanoflann::KdTreeFLANN<PointTarget>(*cloud));
-  calculate_covariances(cloud, *target_kdtree_, *target_covs_);
+  // FIX: Call base class function correctly
+  pcl::Registration<PointSource, PointTarget>::setInputTarget(cloud);
+
+  // FIX: Correctly initialize K-d tree
+  target_kdtree_.reset(new nanoflann::KdTreeFLANN<PointTarget>(false));
+  target_kdtree_->setInputCloud(cloud);
+
+  // FIX: Pass vector directly, not with dereference operator *
+  calculate_covariances(cloud, *target_kdtree_, target_covs_);
   calculate_target_intensity_gradients();
 }
 
@@ -70,20 +90,22 @@ void NanoGICP<PointSource, PointTarget>::calculate_target_intensity_gradients() 
         target_intensity_gradients_.clear();
         return;
     }
-    target_intensity_gradients_.assign(target_->size(), Eigen::Vector3d::Zero());
+    // FIX: Use float type
+    target_intensity_gradients_.assign(target_->size(), Eigen::Vector3f::Zero());
     #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
     for (int i = 0; i < target_->size(); ++i) {
-        Eigen::Vector3d gradient;
+        // FIX: Use float type
+        Eigen::Vector3f gradient;
         if(estimate_spatial_intensity_gradient(i, gradient)) {
             target_intensity_gradients_[i] = gradient;
         }
     }
 }
 
+// FIX: Signature now uses float
 template <typename PointSource, typename PointTarget>
 bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
-  int target_index,
-  Eigen::Vector3d& gradient) const {
+  int target_index, Eigen::Vector3f& gradient) const {
   if (target_index < 0 || !this->target_kdtree_ || target_index >= this->target_->size()) {
       return false;
   }
@@ -94,17 +116,18 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
   if (found_neighbors < 4) {
     return false;
   }
-  Eigen::MatrixXd A(found_neighbors, 4);
-  Eigen::VectorXd i(found_neighbors);
+  // FIX: Use float types
+  Eigen::MatrixXf A(found_neighbors, 4);
+  Eigen::VectorXf i(found_neighbors);
   for (int j = 0; j < found_neighbors; ++j) {
     const auto& pt = this->target_->at(nn_indices[j]);
     A(j, 0) = pt.x;
     A(j, 1) = pt.y;
     A(j, 2) = pt.z;
-    A(j, 3) = 1.0;
+    A(j, 3) = 1.0f;
     i(j) = pt.intensity;
   }
-  Eigen::Vector4d g = (A.transpose() * A).ldlt().solve(A.transpose() * i);
+  Eigen::Vector4f g = (A.transpose() * A).ldlt().solve(A.transpose() * i);
   if (g.hasNaN()) {
       return false;
   }
@@ -112,58 +135,102 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
   return true;
 }
 
-template <typename PointSource, typename PointTarget>
-void NanoGICP<PointSource, PointTarget>::computeTransformation(PointCloudSource& output, const Matrix4& guess) {
-  LsqRegistration<PointSource, PointTarget>::computeTransformation(output, guess);
+// FIX: Signature now uses float
+template<typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::computeTransformation(PointCloudSource& output, const Eigen::Matrix4f& guess) {
+    Eigen::Isometry3f trans = Eigen::Isometry3f::Identity();
+    trans.matrix() = guess;
+
+    for (int i = 0; i < this->max_iterations_; ++i) {
+        Eigen::Matrix<float, 6, 6> H;
+        Eigen::Matrix<float, 6, 1> b;
+        linearize(trans, &H, &b);
+        Eigen::Matrix<float, 6, 1> dx = H.ldlt().solve(-b);
+        if(dx.hasNaN()) {
+            PCL_WARN("Solver converged to NaN values. Aborting registration.\n");
+            break;
+        }
+
+        Eigen::Isometry3f delta = Eigen::Isometry3f::Identity();
+        delta.prerotate(Eigen::AngleAxisf(dx[2], Eigen::Vector3f::UnitZ()));
+        delta.prerotate(Eigen::AngleAxisf(dx[1], Eigen::Vector3f::UnitY()));
+        delta.prerotate(Eigen::AngleAxisf(dx[0], Eigen::Vector3f::UnitX()));
+        delta.pretranslate(dx.tail<3>());
+        trans = delta * trans;
+
+        if (dx.norm() < 1e-4) {
+            break;
+        }
+    }
+
+    this->final_transformation_ = trans.matrix();
+    pcl::transformPointCloud(*this->input_, output, this->final_transformation_);
 }
 
 template <typename PointSource, typename PointTarget>
-double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& trans, Eigen::Matrix<double, 6, 6>* H, Eigen::Matrix<double, 6, 1>* b) {
+void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Isometry3f& trans) {
+    correspondences_.assign(input_->size(), -1);
+    sq_distances_.assign(input_->size(), std::numeric_limits<float>::max());
+    mahalanobis_.assign(input_->size(), Eigen::Matrix4f::Identity());
+
+    std::vector<int> k_indices(1);
+    std::vector<float> k_sq_dists(1);
+
+    for (size_t i = 0; i < input_->size(); ++i) {
+        PointTarget transformed_pt;
+        transformed_pt.getVector4fMap() = trans * input_->at(i).getVector4fMap();
+
+        target_kdtree_->nearestKSearch(transformed_pt, 1, k_indices, k_sq_dists);
+        
+        if (k_sq_dists[0] < this->corr_dist_threshold_ * this->corr_dist_threshold_) {
+            correspondences_[i] = k_indices[0];
+            sq_distances_[i] = k_sq_dists[0];
+        }
+    }
+}
+
+// FIX: Signature now uses float
+template <typename PointSource, typename PointTarget>
+float NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b) {
   update_correspondences(trans);
-  double sum_errors = 0.0;
-  if (H && b) {
-    H->setZero();
-    b->setZero();
-  }
-#pragma omp parallel for num_threads(num_threads_) reduction(+ : sum_errors)
+
+  // FIX: Use float
+  float sum_errors = 0.0f;
+  H->setZero();
+  b->setZero();
+
+  #pragma omp parallel for num_threads(num_threads_) reduction(+ : sum_errors)
   for (int i = 0; i < input_->size(); i++) {
     int target_index = correspondences_[i];
-    if (target_index < 0) {
-      continue;
-    }
-    const Eigen::Vector4d mean_A = input_->at(i).getVector4fMap().template cast<double>();
-    const Eigen::Vector4d mean_B = target_->at(target_index).getVector4fMap().template cast<double>();
-    
-    // FIX 4: Dereference shared_ptr before indexing
-    const Eigen::Matrix4d& C1 = (*source_covs_)[i];
-    const Eigen::Matrix4d& C2 = (*target_covs_)[target_index];
-    
-    const Eigen::Vector4d transed_mean_A = trans * mean_A;
-    const Eigen::Vector4d error = mean_B - transed_mean_A;
-    const Eigen::Matrix4d C = C2 + trans.matrix() * C1 * trans.matrix().transpose();
-    Eigen::Matrix4d mahalanobis = C.inverse();
+    if (target_index < 0) continue;
 
-    // FIX 5: Use brackets [] for indexing, not parentheses ()
-    mahalanobis_[i] = mahalanobis;
+    const Eigen::Vector4f mean_A = input_->at(i).getVector4fMap();
+    const Eigen::Vector4f mean_B = target_->at(target_index).getVector4fMap();
+    const Eigen::Matrix4f& C1 = source_covs_[i];
+    const Eigen::Matrix4f& C2 = target_covs_[target_index];
+
+    const Eigen::Vector4f transed_mean_A = trans * mean_A;
+    const Eigen::Vector4f error = mean_B - transed_mean_A;
+    const Eigen::Matrix4f C = C2 + trans.matrix() * C1 * trans.matrix().transpose();
     
+    Eigen::Matrix4f mahalanobis = C.inverse();
+    mahalanobis_[i] = mahalanobis;
     sum_errors += error.transpose() * mahalanobis * error;
-    if (H == nullptr || b == nullptr) {
-      continue;
-    }
-    Eigen::Matrix<double, 4, 6> dtdx0 = Eigen::Matrix<double, 4, 6>::Zero();
-    dtdx0.block<3, 3>(0, 0) = skewd(transed_mean_A.head<3>());
-    dtdx0.block<3, 3>(0, 3) = -Eigen::Matrix3d::Identity();
-    Eigen::Matrix<double, 6, 4> jlossexp = -dtdx0.transpose();
-    Eigen::Matrix<double, 6, 6> Hi = jlossexp * mahalanobis * jlossexp.transpose();
-    Eigen::Matrix<double, 6, 1> bi = jlossexp * mahalanobis * error;
-    if (photometric_weight_ > 1e-6) {
-      const Eigen::Vector3d& intensity_gradient = target_intensity_gradients_[target_index];
-      if (intensity_gradient.squaredNorm() > 1e-3) {
-        const auto& source_point = this->input_->at(i);
-        const auto& target_point = this->target_->at(target_index);
-        double e_photo = source_point.intensity - target_point.intensity;
-        Eigen::Matrix<double, 1, 6> J_photo;
-        const Eigen::Vector3d transformed_pt = transed_mean_A.head<3>();
+
+    Eigen::Matrix<float, 4, 6> dtdx0 = Eigen::Matrix<float, 4, 6>::Zero();
+    dtdx0.block<3, 3>(0, 0) = skew(transed_mean_A.head<3>());
+    dtdx0.block<3, 3>(0, 3) = -Eigen::Matrix3f::Identity();
+    
+    Eigen::Matrix<float, 6, 4> jlossexp = -dtdx0.transpose();
+    Eigen::Matrix<float, 6, 6> Hi = jlossexp * mahalanobis * jlossexp.transpose();
+    Eigen::Matrix<float, 6, 1> bi = jlossexp * mahalanobis * error;
+
+    if (photometric_weight_ > 1e-6f) {
+      const Eigen::Vector3f& intensity_gradient = target_intensity_gradients_[target_index];
+      if (intensity_gradient.squaredNorm() > 1e-3f) {
+        float e_photo = input_->at(i).intensity - target_->at(target_index).intensity;
+        Eigen::Matrix<float, 1, 6> J_photo;
+        const Eigen::Vector3f transformed_pt = transed_mean_A.head<3>();
         J_photo(0, 0) = intensity_gradient.x();
         J_photo(0, 1) = intensity_gradient.y();
         J_photo(0, 2) = intensity_gradient.z();
@@ -174,6 +241,7 @@ double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& tr
         bi -= J_photo.transpose() * photometric_weight_ * e_photo;
       }
     }
+    
     #pragma omp critical
     {
       (*H) += Hi;
@@ -183,6 +251,34 @@ double NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3d& tr
   return sum_errors;
 }
 
-// ... (Rest of the file remains the same)
+template<typename PointSource, typename PointTarget>
+template<typename PointT>
+bool NanoGICP<PointSource, PointTarget>::calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances) {
+    covariances.resize(cloud->size());
+    #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
+    for(int i = 0; i < cloud->size(); ++i) {
+        std::vector<int> k_indices;
+        std::vector<float> k_sq_dists;
+        kdtree.nearestKSearch(cloud->at(i), 20, k_indices, k_sq_dists);
+
+        Eigen::Matrix<float, 4, -1> neighbors(4, k_indices.size());
+        for(int j=0; j<k_indices.size(); j++) {
+            neighbors.col(j) = cloud->at(k_indices[j]).getVector4fMap();
+        }
+
+        Eigen::Vector4f mean = neighbors.rowwise().mean();
+        Eigen::Matrix4f cov = (neighbors.colwise() - mean) * (neighbors.colwise() - mean).transpose() / k_indices.size();
+        
+        // Original dlio regularization
+        Eigen::JacobiSVD<Eigen::Matrix3f> svd(cov.block<3, 3>(0, 0), Eigen::ComputeFullU | Eigen::ComputeFullV);
+        Eigen::Vector3f values = Eigen::Vector3f::Ones() * 1e-3;
+        values = svd.singularValues().array().max(values.array());
+        
+        cov.block<3, 3>(0, 0) = svd.matrixU() * values.asDiagonal() * svd.matrixV().transpose();
+        
+        covariances[i] = cov;
+    }
+    return true;
+}
 
 } // namespace nano_gicp
