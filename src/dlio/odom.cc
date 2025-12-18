@@ -112,14 +112,14 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->gicp.setMaximumIterations(this->gicp_max_iter_);
   this->gicp.setTransformationEpsilon(this->gicp_transformation_ep_);
   this->gicp.setRotationEpsilon(this->gicp_rotation_ep_);
-  this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+  // this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
   this->gicp_temp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
   this->gicp_temp.setMaximumIterations(this->gicp_max_iter_);
   this->gicp_temp.setTransformationEpsilon(this->gicp_transformation_ep_);
   this->gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
-  this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+  // this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
   pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
   this->gicp.setSearchMethodSource(temp, true);
@@ -745,7 +745,7 @@ void dlio::OdomNode::initializeInputTarget() {
 
 void dlio::OdomNode::setInputSource() {
   this->gicp.setInputSource(this->current_scan);
-  this->gicp.calculateSourceCovariances();
+  // this->gicp.calculateSourceCovariances();
 }
 
 void dlio::OdomNode::initializeDLIO() {
@@ -1016,13 +1016,15 @@ void dlio::OdomNode::getNextPose() {
   if (this->new_submap_is_ready && this->submap_hasChanged) {
 
     // Set the current global submap as the target cloud
-    this->gicp.registerInputTarget(this->submap_cloud);
+    // this->gicp.registerInputTarget(this->submap_cloud);
+    this->gicp.setInputTarget(this->submap_cloud);
+
 
     // Set submap kdtree
-    this->gicp.target_kdtree_ = this->submap_kdtree;
+    // this->gicp.target_kdtree_ = this->submap_kdtree;
 
     // Set target cloud's normals as submap normals
-    this->gicp.setTargetCovariances(this->submap_normals);
+    // this->gicp.setTargetCovariances(this->submap_normals);
 
     this->submap_hasChanged = false;
   }
@@ -1759,7 +1761,7 @@ void dlio::OdomNode::buildSubmap(State vehicle_state) {
     this->pauseSubmapBuildIfNeeded();
 
     this->gicp_temp.setInputTarget(this->submap_cloud);
-    this->submap_kdtree = this->gicp_temp.target_kdtree_;
+    // this->submap_kdtree = this->gicp_temp.target_kdtree_;
 
     this->submap_kf_idx_prev = this->submap_kf_idx_curr;
   }
