@@ -740,7 +740,8 @@ void dlio::OdomNode::initializeInputTarget() {
   this->keyframe_timestamps.push_back(this->scan_header_stamp);
   // this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
   // this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
-  this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
+  // this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
+  this->keyframe_normals.push_back(std::make_shared<const nano_gicp::CovarianceList>(this->gicp.getSourceCovariances()));
   this->keyframe_transformations.push_back(this->T_corr);
 
 }
@@ -1619,7 +1620,8 @@ void dlio::OdomNode::updateKeyframes() {
     this->keyframe_timestamps.push_back(this->scan_header_stamp);
     // this->keyframe_normals.push_back(this->gicp.getSourceCovariances());
     // this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
-    this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
+    // this->keyframe_normals.push_back(std::make_shared<const CovarianceList>(this->gicp.getSourceCovariances()));
+    this->keyframe_normals.push_back(std::make_shared<const nano_gicp::CovarianceList>(this->gicp.getSourceCovariances()));
     this->keyframe_transformations.push_back(this->T_corr);
     lock.unlock();
 
@@ -1782,7 +1784,7 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
     Eigen::Matrix4f T = this->keyframe_transformations[i];
     lock.unlock();
 
-  Eigen::Matrix4f Tf = T; // T is already the correct float type
+  Eigen::Matrix4f Tf = T; // T is already a float
 
   pcl::PointCloud<PointType>::Ptr transformed_keyframe = std::make_shared<pcl::PointCloud<PointType>>();
   pcl::transformPointCloud (*raw_keyframe, *transformed_keyframe, Tf);
