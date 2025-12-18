@@ -57,6 +57,7 @@ include_directories(SYSTEM)
 add_library(nanoflann STATIC
   src/nano_gicp/nanoflann.cc
 )
+# Make linkage PUBLIC so targets that link nanoflann also link against PCL
 target_link_libraries(nanoflann PUBLIC ${PCL_LIBRARIES})
 ament_target_dependencies(nanoflann)
 
@@ -66,11 +67,13 @@ add_library(nano_gicp STATIC
   src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
+# Make linkage PUBLIC to propagate PCL, OpenMP, and nanoflann dependencies
 target_link_libraries(nano_gicp PUBLIC ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
 ament_target_dependencies(nano_gicp)
 
 # Odometry Node
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
+# No longer need to explicitly link PCL here, it's inherited from nano_gicp
 target_link_libraries(dlio_odom_node Threads::Threads nano_gicp)
 ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs")
 
@@ -117,3 +120,4 @@ endif()
 
 target_compile_options(dlio_odom_node PRIVATE ${OpenMP_FLAGS})
 target_compile_options(dlio_map_node PRIVATE ${OpenMP_FLAGS})
+
