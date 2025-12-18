@@ -8,10 +8,10 @@ template class nano_gicp::NanoGICP<dlio::Point, dlio::Point>;
 
 namespace nano_gicp {
 
-// Helper to create skew-symmetric matrix from a 3D vector
-template<typename T>
-Eigen::Matrix<T, 3, 3> skew(const Eigen::Matrix<T, 3, 1>& v) {
-    Eigen::Matrix<T, 3, 3> m;
+// FIX: Make the skew function generic to accept Eigen expressions (like .head<3>())
+template<typename Derived>
+Eigen::Matrix<typename Derived::Scalar, 3, 3> skew(const Eigen::MatrixBase<Derived>& v) {
+    Eigen::Matrix<typename Derived::Scalar, 3, 3> m;
     m.setZero();
     m(0, 1) = -v(2);
     m(0, 2) = v(1);
@@ -45,7 +45,6 @@ void NanoGICP<PointSource, PointTarget>::setCorrespondenceRandomness(int k) {
   this->k_correspondences_ = k;
 }
 
-// FIX: Definition now matches declaration
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setMaxCorrespondenceDistance(float corr) {
   this->corr_dist_threshold_ = corr;
@@ -59,27 +58,21 @@ void NanoGICP<PointSource, PointTarget>::setRegularizationMethod(RegularizationM
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setInputSource(const PointCloudSourceConstPtr& cloud) {
-  // FIX: Call base class function correctly
   pcl::Registration<PointSource, PointTarget>::setInputSource(cloud);
   
-  // FIX: Correctly initialize K-d tree
   input_kdtree_.reset(new nanoflann::KdTreeFLANN<PointSource>(false));
   input_kdtree_->setInputCloud(cloud);
   
-  // FIX: Pass vector directly, not with dereference operator *
   calculate_covariances(cloud, *input_kdtree_, source_covs_);
 }
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setInputTarget(const PointCloudTargetConstPtr& cloud) {
-  // FIX: Call base class function correctly
   pcl::Registration<PointSource, PointTarget>::setInputTarget(cloud);
 
-  // FIX: Correctly initialize K-d tree
   target_kdtree_.reset(new nanoflann::KdTreeFLANN<PointTarget>(false));
   target_kdtree_->setInputCloud(cloud);
 
-  // FIX: Pass vector directly, not with dereference operator *
   calculate_covariances(cloud, *target_kdtree_, target_covs_);
   calculate_target_intensity_gradients();
 }
@@ -90,11 +83,9 @@ void NanoGICP<PointSource, PointTarget>::calculate_target_intensity_gradients() 
         target_intensity_gradients_.clear();
         return;
     }
-    // FIX: Use float type
     target_intensity_gradients_.assign(target_->size(), Eigen::Vector3f::Zero());
     #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
     for (int i = 0; i < target_->size(); ++i) {
-        // FIX: Use float type
         Eigen::Vector3f gradient;
         if(estimate_spatial_intensity_gradient(i, gradient)) {
             target_intensity_gradients_[i] = gradient;
@@ -102,7 +93,6 @@ void NanoGICP<PointSource, PointTarget>::calculate_target_intensity_gradients() 
     }
 }
 
-// FIX: Signature now uses float
 template <typename PointSource, typename PointTarget>
 bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
   int target_index, Eigen::Vector3f& gradient) const {
@@ -116,7 +106,6 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
   if (found_neighbors < 4) {
     return false;
   }
-  // FIX: Use float types
   Eigen::MatrixXf A(found_neighbors, 4);
   Eigen::VectorXf i(found_neighbors);
   for (int j = 0; j < found_neighbors; ++j) {
@@ -135,7 +124,6 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
   return true;
 }
 
-// FIX: Signature now uses float
 template<typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::computeTransformation(PointCloudSource& output, const Eigen::Matrix4f& guess) {
     Eigen::Isometry3f trans = Eigen::Isometry3f::Identity();
@@ -189,12 +177,10 @@ void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Iso
     }
 }
 
-// FIX: Signature now uses float
 template <typename PointSource, typename PointTarget>
 float NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b) {
   update_correspondences(trans);
 
-  // FIX: Use float
   float sum_errors = 0.0f;
   H->setZero();
   b->setZero();
@@ -260,6 +246,11 @@ bool NanoGICP<PointSource, PointTarget>::calculate_covariances(const typename pc
         std::vector<int> k_indices;
         std::vector<float> k_sq_dists;
         kdtree.nearestKSearch(cloud->at(i), 20, k_indices, k_sq_dists);
+
+        if (k_indices.size() < 5) {
+            covariances[i] = Eigen::Matrix4f::Identity() * 1e-3;
+            continue;
+        }
 
         Eigen::Matrix<float, 4, -1> neighbors(4, k_indices.size());
         for(int j=0; j<k_indices.size(); j++) {
