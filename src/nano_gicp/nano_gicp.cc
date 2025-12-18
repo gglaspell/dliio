@@ -198,4 +198,97 @@ void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Iso
 }
 
 template <typename PointSource, typename PointTarget>
-float NanoGICP<Point
+float NanoGICP<PointSource, PointTarget>::linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b) {
+  update_correspondences(trans);
+
+  float sum_errors = 0.0f;
+  H->setZero();
+  b->setZero();
+
+  #pragma omp parallel for num_threads(num_threads_) reduction(+ : sum_errors)
+  for (int i = 0; i < input_->size(); i++) {
+    int target_index = correspondences_[i];
+    if (target_index < 0) continue;
+
+    const Eigen::Vector4f mean_A = input_->at(i).getVector4fMap();
+    const Eigen::Vector4f mean_B = target_->at(target_index).getVector4fMap();
+    const Eigen::Matrix4f& C1 = source_covs_[i];
+    const Eigen::Matrix4f& C2 = target_covs_[target_index];
+
+    const Eigen::Vector4f transed_mean_A = trans * mean_A;
+    const Eigen::Vector4f error = mean_B - transed_mean_A;
+    const Eigen::Matrix4f C = C2 + trans.matrix() * C1 * trans.matrix().transpose();
+    
+    Eigen::Matrix4f mahalanobis = C.inverse();
+    mahalanobis_[i] = mahalanobis;
+    sum_errors += error.transpose() * mahalanobis * error;
+
+    Eigen::Matrix<float, 4, 6> dtdx0 = Eigen::Matrix<float, 4, 6>::Zero();
+    dtdx0.block<3, 3>(0, 0) = skew(transed_mean_A.head<3>());
+    dtdx0.block<3, 3>(0, 3) = -Eigen::Matrix3f::Identity();
+    
+    Eigen::Matrix<float, 6, 4> jlossexp = -dtdx0.transpose();
+    Eigen::Matrix<float, 6, 6> Hi = jlossexp * mahalanobis * jlossexp.transpose();
+    Eigen::Matrix<float, 6, 1> bi = jlossexp * mahalanobis * error;
+
+    if (photometric_weight_ > 1e-6f) {
+      const Eigen::Vector3f& intensity_gradient = target_intensity_gradients_[target_index];
+      if (intensity_gradient.squaredNorm() > 1e-3f) {
+        float e_photo = input_->at(i).intensity - target_->at(target_index).intensity;
+        Eigen::Matrix<float, 1, 6> J_photo;
+        const Eigen::Vector3f transformed_pt = transed_mean_A.head<3>();
+        J_photo(0, 0) = intensity_gradient.x();
+        J_photo(0, 1) = intensity_gradient.y();
+        J_photo(0, 2) = intensity_gradient.z();
+        J_photo(0, 3) = transformed_pt.y() * intensity_gradient.z() - transformed_pt.z() * intensity_gradient.y();
+        J_photo(0, 4) = transformed_pt.z() * intensity_gradient.x() - transformed_pt.x() * intensity_gradient.z();
+        J_photo(0, 5) = transformed_pt.x() * intensity_gradient.y() - transformed_pt.y() * intensity_gradient.x();
+        Hi += J_photo.transpose() * photometric_weight_ * J_photo;
+        bi -= J_photo.transpose() * photometric_weight_ * e_photo;
+      }
+    }
+    
+    #pragma omp critical
+    {
+      (*H) += Hi;
+      (*b) += bi;
+    }
+  }
+  return sum_errors;
+}
+
+template<typename PointSource, typename PointTarget>
+template<typename PointT>
+bool NanoGICP<PointSource, PointTarget>::calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances) {
+    covariances.resize(cloud->size());
+    #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
+    for(int i = 0; i < cloud->size(); ++i) {
+        std::vector<int> k_indices;
+        std::vector<float> k_sq_dists;
+        kdtree.nearestKSearch(cloud->at(i), 20, k_indices, k_sq_dists);
+
+        if (k_indices.size() < 5) {
+            covariances[i] = Eigen::Matrix4f::Identity() * 1e-3;
+            continue;
+        }
+
+        Eigen::Matrix<float, 4, -1> neighbors(4, k_indices.size());
+        for(size_t j=0; j<k_indices.size(); j++) {
+            neighbors.col(j) = cloud->at(k_indices[j]).getVector4fMap();
+        }
+
+        Eigen::Vector4f mean = neighbors.rowwise().mean();
+        Eigen::Matrix4f cov = (neighbors.colwise() - mean) * (neighbors.colwise() - mean).transpose() / k_indices.size();
+        
+        Eigen::JacobiSVD<Eigen::Matrix3f> svd(cov.block<3, 3>(0, 0), Eigen::ComputeFullU | Eigen::ComputeFullV);
+        Eigen::Vector3f values = Eigen::Vector3f::Ones() * 1e-3;
+        values = svd.singularValues().array().max(values.array());
+        
+        cov.block<3, 3>(0, 0) = svd.matrixU() * values.asDiagonal() * svd.matrixV().transpose();
+        
+        covariances[i] = cov;
+    }
+    return true;
+}
+
+} // namespace nano_gicp
