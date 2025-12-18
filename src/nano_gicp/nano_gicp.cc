@@ -29,7 +29,7 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
   this->corr_dist_threshold_ = std::numeric_limits<float>::max();
   this->regularization_method_ = RegularizationMethod::PLANE;
   this->max_iterations_ = 64;
-  this->transformation_epsilon_ = 1e-4; // Default value
+  this->transformation_epsilon_ = 1e-4; 
 }
 
 template <typename PointSource, typename PointTarget>
@@ -50,7 +50,6 @@ void NanoGICP<PointSource, PointTarget>::setMaxCorrespondenceDistance(float corr
   this->corr_dist_threshold_ = corr;
 }
 
-// --- START OF FIX: Implement missing functions ---
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setTransformationEpsilon(float eps) {
     this->transformation_epsilon_ = eps;
@@ -58,19 +57,16 @@ void NanoGICP<PointSource, PointTarget>::setTransformationEpsilon(float eps) {
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setRotationEpsilon(float eps) {
-    // DLIO used this, we'll just map it to the same parameter
     this->transformation_epsilon_ = eps;
 }
 
-// Dummy function to satisfy the API, does nothing as we don't use LM
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setInitialLambdaFactor(float lambda) {}
 
 template <typename PointSource, typename PointTarget>
-const CovarianceList& NanoGICP<PointSource, PointTarget>::getSourceCovariances() const {
+const typename nano_gicp::NanoGICP<PointSource, PointTarget>::CovarianceList& NanoGICP<PointSource, PointTarget>::getSourceCovariances() const {
     return source_covs_;
 }
-// --- END OF FIX ---
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setRegularizationMethod(RegularizationMethod method) {
@@ -160,13 +156,16 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(PointCloudSource&
             break;
         }
 
-        // Small increment
         Eigen::Isometry3f delta = Eigen::Isometry3f::Identity();
         delta.rotate(Eigen::AngleAxisf(dx(2), Eigen::Vector3f::UnitZ()));
         delta.rotate(Eigen::AngleAxisf(dx(1), Eigen::Vector3f::UnitY()));
         delta.rotate(Eigen::AngleAxisf(dx(0), Eigen::Vector3f::UnitX()));
         delta.pretranslate(dx.tail<3>());
-        trans = delta * trans;
+
+        // --- START OF FIX ---
+        // Apply the correction in the LOCAL frame
+        trans = trans * delta;
+        // --- END OF FIX ---
 
         if (dx.norm() < transformation_epsilon_) {
             break;
