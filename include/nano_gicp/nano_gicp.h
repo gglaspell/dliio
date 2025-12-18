@@ -10,7 +10,6 @@
 
 namespace nano_gicp {
 
-// Define types with FLOAT precision
 using Covariance = Eigen::Matrix4f;
 using CovarianceList = std::vector<Covariance, Eigen::aligned_allocator<Covariance>>;
 using Mahalanobis = Eigen::Matrix4f;
@@ -41,38 +40,30 @@ public:
   void setCorrespondenceRandomness(int k);
   void setRegularizationMethod(RegularizationMethod method);
   void setMaxCorrespondenceDistance(float corr);
-
-  // --- START OF FIX: Add missing functions from original API ---
   void setTransformationEpsilon(float eps);
   void setRotationEpsilon(float eps);
   void setInitialLambdaFactor(float lambda);
 
   const CovarianceList& getSourceCovariances() const;
-  // --- END OF FIX ---
 
-  void setPhotometricWeight(float weight) {
-    photometric_weight_ = weight;
-  }
-
-  void setGradientKNeighbors(int k) {
-    gradient_k_neighbors_ = k;
-  }
+  void setPhotometricWeight(float weight);
+  void setGradientKNeighbors(int k);
 
   virtual void setInputSource(const PointCloudSourceConstPtr& cloud) override;
   virtual void setInputTarget(const PointCloudTargetConstPtr& cloud) override;
-  
-  // --- START OF FIX: Add public member for density ---
+
   float source_density_ = 0.0f;
-  // --- END OF FIX ---
 
 protected:
   virtual void computeTransformation(PointCloudSource& output, const Eigen::Matrix4f& guess) override;
 
-  float linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b);
+  void linearize(const Eigen::Isometry3f& trans, Eigen::Matrix<float, 6, 6>* H, Eigen::Matrix<float, 6, 1>* b);
   void update_correspondences(const Eigen::Isometry3f& trans);
 
   template<typename PointT>
-  bool calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, const nanoflann::KdTreeFLANN<PointT>& kdtree, CovarianceList& covariances);
+  void calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, 
+                             nanoflann::KdTreeFLANN<PointT>& kdtree, 
+                             CovarianceList& covariances);
 
   bool estimate_spatial_intensity_gradient(int target_index, Eigen::Vector3f& gradient) const;
   void calculate_target_intensity_gradients();
@@ -84,13 +75,15 @@ protected:
   using pcl::Registration<PointSource, PointTarget>::corr_dist_threshold_;
   using pcl::Registration<PointSource, PointTarget>::final_transformation_;
   using pcl::Registration<PointSource, PointTarget>::max_iterations_;
-  // --- START OF FIX: Add access to base class members ---
   using pcl::Registration<PointSource, PointTarget>::transformation_epsilon_;
-  // --- END OF FIX ---
 
   int num_threads_;
   int k_correspondences_;
   RegularizationMethod regularization_method_;
+  
+  float rotation_epsilon_;
+  float lambda_factor_;
+  float intensity_gradient_threshold_;
 
   std::unique_ptr<nanoflann::KdTreeFLANN<PointSource>> input_kdtree_;
   std::unique_ptr<nanoflann::KdTreeFLANN<PointTarget>> target_kdtree_;
@@ -102,10 +95,11 @@ protected:
   std::vector<float> sq_distances_;
   MahalanobisList mahalanobis_;
 
-  float photometric_weight_ = 0.0f;
-  int gradient_k_neighbors_ = 10;
+  float photometric_weight_;
+  int gradient_k_neighbors_;
   
   std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> target_intensity_gradients_;
+  std::vector<bool> gradient_valid_;
 };
 
 } // namespace nano_gicp
