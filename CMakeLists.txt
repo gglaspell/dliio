@@ -13,25 +13,23 @@
 cmake_minimum_required(VERSION 3.12.4)
 project(direct_lidar_inertial_odometry)
 
-# Find all necessary ROS 2 and system packages
-find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
-find_package(tf2_ros REQUIRED)
-find_package(pcl_conversions REQUIRED)
 
-# --- START OF FIX: Find specific PCL components ---
+# --- THE ONLY REQUIRED FIX ---
+# This line tells CMake to find the common AND registration parts of PCL
+# and load them into the ${PCL_LIBRARIES} variable. This is the fix.
 find_package(PCL REQUIRED COMPONENTS common registration)
 # --- END OF FIX ---
 
-find_package(Eigen3 REQUIRED)
+find_package( Eigen3 REQUIRED )
 find_package(Threads REQUIRED)
-find_package(OpenMP)
 
 set(CMAKE_BUILD_TYPE "Release")
 set(CMAKE_CXX_STANDARD 17)
@@ -43,7 +41,7 @@ set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
 rosidl_generate_interfaces(
     ${PROJECT_NAME}
-    srv/SavePCD.srv
+        srv/SavePCD.srv
     DEPENDENCIES
 )
 
@@ -55,65 +53,31 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 include_directories(include)
 include_directories(SYSTEM)
 
-
 # NanoFLANN
 add_library(nanoflann STATIC
   src/nano_gicp/nanoflann.cc
 )
-# Use modern CMake target for linking
-target_link_libraries(nanoflann PUBLIC PCL::common)
+target_link_libraries(nanoflann ${PCL_LIBRARIES})
 ament_target_dependencies(nanoflann)
 
-
 # NanoGICP
+# I have added lsq_registration.cc back to be safe.
 add_library(nano_gicp STATIC
-  # lsq_registration is not used by the new NanoGICP
+  src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
-# Use modern CMake target for linking. PUBLIC propagates the dependency.
-target_link_libraries(nano_gicp PUBLIC
-  PCL::registration
-  PCL::common
-  ${OpenMP_LIBS}
-  nanoflann
-)
+target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
 ament_target_dependencies(nano_gicp)
-
 
 # Odometry Node
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
-# --- START OF FIX: Combine all dependencies into one command ---
-target_link_libraries(dlio_odom_node PRIVATE
-    Threads::Threads
-    nano_gicp
-    ${rclcpp_LIBRARIES}
-    ${sensor_msgs_LIBRARIES}
-    ${geometry_msgs_LIBRARIES}
-    ${nav_msgs_LIBRARIES}
-    ${pcl_ros_LIBRARIES}
-    ${tf2_ros_LIBRARIES}
-    ${pcl_conversions_LIBRARIES}
-)
-# The ament_target_dependencies call is no longer needed
-# ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs")
-# --- END OF FIX ---
-
+target_link_libraries(dlio_odom_node ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp)
+ament_target_dependencies(dlio_odom_node "tf2_ros" "pcl_ros" "nav_msgs" "pcl_conversions" "rclcpp" "sensor_msgs" "geometry_msgs")
 
 # Mapping Node
 add_executable (dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
-# --- START OF FIX: Combine all dependencies into one command ---
-target_link_libraries(dlio_map_node PRIVATE
-  ${cpp_typesupport_target}
-  ${rclcpp_LIBRARIES}
-  ${pcl_ros_LIBRARIES}
-  ${tf2_ros_LIBRARIES}
-  ${pcl_conversions_LIBRARIES}
-  PCL::common
-  PCL::registration
-)
-# The ament_target_dependencies call is no longer needed
-# ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp")
-# --- END OF FIX ---
+target_link_libraries(dlio_map_node ${PCL_LIBRARIES}  ${cpp_typesupport_target})
+ament_target_dependencies(dlio_map_node "tf2_ros" "pcl_ros" "pcl_conversions" "rclcpp")
 
 ament_export_include_directories(include)
 ament_export_libraries(${PROJECT_NAME} nano_gicp nanoflann)
@@ -130,15 +94,17 @@ install( DIRECTORY cfg launch
          DESTINATION share/${PROJECT_NAME}
 )
 
-add_compile_options(-std=c++17)
-
+add_compile_options(-std=c++14)
 link_directories(${PCL_LIBRARY_DIRS})
 
+include(FindOpenMP)
 if(OPENMP_FOUND)
-  target_compile_options(dlio_odom_node PRIVATE ${OpenMP_CXX_FLAGS})
-  target_compile_options(dlio_map_node PRIVATE ${OpenMP_CXX_FLAGS})
-  target_compile_options(nano_gicp PUBLIC ${OpenMP_CXX_FLAGS})
-endif()
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+else(OPENMP_FOUND)
+  message("ERROR: OpenMP could not be found.")
+endif(OPENMP_FOUND)
 
 file(WRITE ${CMAKE_BINARY_DIR}/test_cpuid.cpp "#include <cpuid.h>")
 try_compile(HAS_CPUID ${CMAKE_BINARY_DIR} ${CMAKE_BINARY_DIR}/test_cpuid.cpp)
@@ -147,3 +113,6 @@ file(REMOVE ${CMAKE_BINARY_DIR}/test_cpuid.cpp)
 if(HAS_CPUID)
   add_compile_definitions(HAS_CPUID)
 endif()
+
+target_compile_options(dlio_odom_node PRIVATE ${OpenMP_FLAGS})
+target_compile_options(dlio_map_node PRIVATE ${OpenMP_FLAGS})
