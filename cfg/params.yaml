@@ -49,6 +49,12 @@
     odom/gicp/initLambdaFactor: 1e-9
 
     odom/gicp/photometricWeight: 0.1
+
+    # Intensity range correction
+    # intensityAlpha : falloff exponent (2.0 = inverse-square; tune per sensor)
+    # intensityRRef  : reference range in metres (anchor; 1.0 is a safe default)
+    odom/preprocessing/intensityAlpha: 2.0
+    odom/preprocessing/intensityRRef: 1.0
     odom/gicp/gradientKNeighbors: 10
     
     odom/geo/Kp: 4.5
