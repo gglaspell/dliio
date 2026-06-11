@@ -32,6 +32,10 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->deskew_size = 0;
 
   double photometricWeight = this->declare_parameter<double>("odom.gicp.photometricWeight", 0.0);
+
+  // Intensity range correction parameters
+  this->intensity_alpha_ = this->declare_parameter<double>("odom.preprocessing.intensityAlpha", 2.0);
+  this->intensity_r_ref_ = this->declare_parameter<double>("odom.preprocessing.intensityRRef", 1.0);
   int gradientKNeighbors = this->declare_parameter<int>("odom.gicp.gradientKNeighbors", 10);
 
   this->gicp.setPhotometricWeight(photometricWeight);
@@ -506,6 +510,22 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   std::vector<int> idx;
   original_scan_->is_dense = false;
   pcl::removeNaNFromPointCloud(*original_scan_, *original_scan_, idx);
+
+  // Range-normalize intensity to remove distance-dependent falloff.
+  // I_corrected = clamp( I_raw * (r / r_ref)^alpha , 0, 255 )
+  // intensity_alpha_ : falloff exponent  (~2.0 for inverse-square law)
+  // intensity_r_ref_ : reference range in metres (anchor point, typically 1.0 m)
+  {
+    const float alpha   = static_cast<float>(this->intensity_alpha_);
+    const float r_ref   = static_cast<float>(this->intensity_r_ref_);
+    for (auto& pt : original_scan_->points) {
+      float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+      if (r > 0.f) {
+        pt.intensity = std::clamp(pt.intensity * std::pow(r / r_ref, alpha),
+                                  0.f, 255.f);
+      }
+    }
+  }
 
   // Crop Box Filter
   this->crop.setInputCloud(original_scan_);
