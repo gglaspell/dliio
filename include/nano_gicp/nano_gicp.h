@@ -65,8 +65,8 @@ protected:
                              nanoflann::KdTreeFLANN<PointT>& kdtree, 
                              CovarianceList& covariances);
 
-  bool estimate_spatial_intensity_gradient(int target_index, Eigen::Vector3f& gradient) const;
-  void calculate_target_intensity_gradients();
+  bool estimate_spatial_reflectivity_gradient(int target_index, Eigen::Vector3f& gradient) const;
+  void calculate_target_reflectivity_gradients();
 
 protected:
   using pcl::Registration<PointSource, PointTarget>::reg_name_;
@@ -83,7 +83,7 @@ protected:
   
   float rotation_epsilon_;
   float lambda_factor_;
-  float intensity_gradient_threshold_;
+  float reflectivity_gradient_threshold_;
 
   std::unique_ptr<nanoflann::KdTreeFLANN<PointSource>> input_kdtree_;
   std::unique_ptr<nanoflann::KdTreeFLANN<PointTarget>> target_kdtree_;
@@ -98,7 +98,7 @@ protected:
   float photometric_weight_;
   int gradient_k_neighbors_;
   
-  std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> target_intensity_gradients_;
+  std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> target_reflectivity_gradients_;
   std::vector<bool> gradient_valid_;
 };
 
