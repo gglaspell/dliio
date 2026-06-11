@@ -60,7 +60,7 @@ namespace dlio {
     Point(): data{0.f, 0.f, 0.f, 1.f} {}
 
     PCL_ADD_POINT4D;
-    float intensity; // intensity
+    float reflectivity; // Ouster calibrated reflectivity
     union {
     std::uint32_t t;   // (Ouster) time since beginning of scan in nanoseconds
     float time;        // (Velodyne) time since beginning of scan in seconds
@@ -75,7 +75,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(dlio::Point,
                                  (float, x, x)
                                  (float, y, y)
                                  (float, z, z)
-                                 (float, intensity, intensity)
+                                 (float, reflectivity, reflectivity)
                                  (std::uint32_t, t, t)
                                  (float, time, time)
                                  (double, timestamp, timestamp))
