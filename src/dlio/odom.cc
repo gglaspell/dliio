@@ -16,6 +16,7 @@
 #include <queue>
 
 #include "rclcpp/qos.hpp"
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 
 dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
@@ -43,8 +44,21 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   int gradientKNeighbors;
   dlio::declare_param(this, "odom/gicp/gradientKNeighbors", gradientKNeighbors, 10);
 
+  // Photometric channel: "intensity" (range-dependent; pairs with the range
+  // correction below) or "reflectivity" (e.g. Ouster calibrated reflectivity,
+  // already range-normalized -> the range correction is skipped for it).
+  std::string photometricChannel;
+  dlio::declare_param(this, "odom/gicp/photometricChannel", photometricChannel, std::string("intensity"));
+  this->use_reflectivity_ = (photometricChannel == "reflectivity");
+  if (photometricChannel != "intensity" && photometricChannel != "reflectivity") {
+    RCLCPP_WARN(this->get_logger(),
+        "Unknown odom/gicp/photometricChannel '%s'; defaulting to 'intensity'.",
+        photometricChannel.c_str());
+  }
+
   this->gicp.setPhotometricWeight(photometricWeight);
   this->gicp.setGradientKNeighbors(gradientKNeighbors);
+  this->gicp.setPhotometricChannel(this->use_reflectivity_);
   
   this->lidar_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   auto lidar_sub_opt = rclcpp::SubscriptionOptions();
@@ -511,6 +525,38 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   pcl::PointCloud<PointType>::Ptr original_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
   pcl::fromROSMsg(*pc, *original_scan_);
 
+  // Populate the reflectivity channel from the raw message. pcl::fromROSMsg only
+  // copies fields whose datatype matches our struct (reflectivity is a float here,
+  // but sensors publish it as uint8/uint16), so copy it explicitly with conversion.
+  // Done before NaN removal so indices still line up 1:1 with the message.
+  if (this->use_reflectivity_) {
+    auto rfield = std::find_if(pc->fields.begin(), pc->fields.end(),
+        [](const sensor_msgs::msg::PointField& f){ return f.name == "reflectivity"; });
+    if (rfield != pc->fields.end()) {
+      const size_t n = original_scan_->points.size();
+      auto fill = [&](auto it) {
+        for (size_t i = 0; i < n; ++i, ++it) {
+          original_scan_->points[i].reflectivity = static_cast<float>(*it);
+        }
+      };
+      using PF = sensor_msgs::msg::PointField;
+      switch (rfield->datatype) {
+        case PF::UINT8:   fill(sensor_msgs::PointCloud2ConstIterator<uint8_t >(*pc, "reflectivity")); break;
+        case PF::UINT16:  fill(sensor_msgs::PointCloud2ConstIterator<uint16_t>(*pc, "reflectivity")); break;
+        case PF::UINT32:  fill(sensor_msgs::PointCloud2ConstIterator<uint32_t>(*pc, "reflectivity")); break;
+        case PF::FLOAT32: fill(sensor_msgs::PointCloud2ConstIterator<float   >(*pc, "reflectivity")); break;
+        default:
+          RCLCPP_WARN_ONCE(this->get_logger(),
+              "reflectivity field has unsupported datatype %u; channel will be zero.",
+              rfield->datatype);
+          break;
+      }
+    } else {
+      RCLCPP_WARN_ONCE(this->get_logger(),
+          "photometricChannel=reflectivity but the cloud has no 'reflectivity' field.");
+    }
+  }
+
   // Remove NaNs
   std::vector<int> idx;
   original_scan_->is_dense = false;
@@ -520,7 +566,8 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   // I_corrected = clamp( I_raw * (r / r_ref)^alpha , 0, 255 )
   // intensity_alpha_ : falloff exponent  (~2.0 for inverse-square law)
   // intensity_r_ref_ : reference range in metres (anchor point, typically 1.0 m)
-  {
+  // Skipped when using reflectivity, which is already range-normalized by the sensor.
+  if (!this->use_reflectivity_) {
     const float alpha   = static_cast<float>(this->intensity_alpha_);
     const float r_ref   = static_cast<float>(this->intensity_r_ref_);
     if (r_ref > 0.f) {  // r_ref <= 0 would divide-by-zero -> inf/NaN intensities

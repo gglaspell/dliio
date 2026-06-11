@@ -50,7 +50,15 @@
 
     odom/gicp/photometricWeight: 0.1
 
-    # Intensity range correction
+    # Photometric channel for the GICP intensity term:
+    #   intensity    - raw return strength (range-dependent); uses the range
+    #                  correction below.
+    #   reflectivity - calibrated reflectivity (e.g. Ouster), already range-
+    #                  normalized; the range correction is skipped automatically.
+    # Requires the input cloud to carry the chosen field.
+    odom/gicp/photometricChannel: intensity
+
+    # Intensity range correction (only applied when photometricChannel: intensity)
     # intensityAlpha : falloff exponent (2.0 = inverse-square; tune per sensor)
     # intensityRRef  : reference range in metres (anchor; 1.0 is a safe default)
     odom/preprocessing/intensityAlpha: 2.0

@@ -57,10 +57,11 @@ namespace dlio {
   class MapNode;
 
   struct Point {
-    Point(): data{0.f, 0.f, 0.f, 1.f} {}
+    Point(): data{0.f, 0.f, 0.f, 1.f}, intensity(0.f), reflectivity(0.f) {}
 
     PCL_ADD_POINT4D;
-    float intensity; // intensity
+    float intensity;    // return signal strength (range-dependent)
+    float reflectivity; // calibrated reflectivity (range-normalized, e.g. Ouster)
     union {
     std::uint32_t t;   // (Ouster) time since beginning of scan in nanoseconds
     float time;        // (Velodyne) time since beginning of scan in seconds
@@ -76,6 +77,7 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(dlio::Point,
                                  (float, y, y)
                                  (float, z, z)
                                  (float, intensity, intensity)
+                                 (float, reflectivity, reflectivity)
                                  (std::uint32_t, t, t)
                                  (float, time, time)
                                  (double, timestamp, timestamp))

@@ -34,6 +34,7 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
   this->lambda_factor_ = 1e-9;
   this->photometric_weight_ = 0.0f;
   this->gradient_k_neighbors_ = 10;
+  this->photometric_use_reflectivity_ = false;
   this->intensity_gradient_threshold_ = 1e-6;
 }
 
@@ -78,6 +79,11 @@ void NanoGICP<PointSource, PointTarget>::setPhotometricWeight(float weight) {
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setGradientKNeighbors(int k) {
     this->gradient_k_neighbors_ = k;
+}
+
+template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setPhotometricChannel(bool use_reflectivity) {
+    this->photometric_use_reflectivity_ = use_reflectivity;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -158,9 +164,15 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
     return false;
   }
   
+  // Read whichever channel (intensity or reflectivity) is selected.
+  const bool use_refl = this->photometric_use_reflectivity_;
+  auto chan = [use_refl](const PointTarget& p) {
+    return use_refl ? p.reflectivity : p.intensity;
+  };
+
   Eigen::MatrixXf A(found_neighbors, 4);
   Eigen::VectorXf i(found_neighbors);
-  
+
   float mean_intensity = 0.0f;
   for (int j = 0; j < found_neighbors; ++j) {
     const auto& pt = this->target_->at(nn_indices[j]);
@@ -168,20 +180,20 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
     A(j, 1) = pt.y;
     A(j, 2) = pt.z;
     A(j, 3) = 1.0f;
-    i(j) = pt.intensity;
-    mean_intensity += pt.intensity;
+    i(j) = chan(pt);
+    mean_intensity += chan(pt);
   }
   mean_intensity /= found_neighbors;
-  
-  // Calculate intensity variance for validation
+
+  // Calculate channel variance for validation
   float intensity_variance = 0.0f;
   for (int j = 0; j < found_neighbors; ++j) {
-      float diff = this->target_->at(nn_indices[j]).intensity - mean_intensity;
+      float diff = chan(this->target_->at(nn_indices[j])) - mean_intensity;
       intensity_variance += diff * diff;
   }
   intensity_variance /= found_neighbors;
-  
-  // Reject if intensity is too uniform
+
+  // Reject if the channel is too uniform
   if (intensity_variance < intensity_gradient_threshold_) {
       return false;
   }
@@ -333,7 +345,9 @@ void NanoGICP<PointSource, PointTarget>::linearize(
         
         // Photometric term
         if (use_photometric && gradient_valid_[target_index]) {
-            float intensity_diff = source_pt.intensity - target_pt.intensity;
+            float src_val = photometric_use_reflectivity_ ? source_pt.reflectivity : source_pt.intensity;
+            float tgt_val = photometric_use_reflectivity_ ? target_pt.reflectivity : target_pt.intensity;
+            float intensity_diff = src_val - tgt_val;
             Eigen::Vector3f gradient = target_intensity_gradients_[target_index];
             
             if (gradient.norm() > 1e-6 && gradient.norm() < 100.0f) {

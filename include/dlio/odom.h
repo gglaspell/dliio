@@ -365,5 +365,7 @@ private:
   // Intensity range correction
   double intensity_alpha_;
   double intensity_r_ref_;
+  // Photometric channel: false = intensity, true = reflectivity
+  bool use_reflectivity_;
 
 };
