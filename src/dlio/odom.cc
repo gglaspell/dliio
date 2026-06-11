@@ -31,12 +31,17 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->deskew_status = false;
   this->deskew_size = 0;
 
-  double photometricWeight = this->declare_parameter<double>("odom.gicp.photometricWeight", 0.0);
+  // NOTE: declare with slash-separated names via dlio::declare_param so these match
+  // the keys in cfg/params.yaml. Dot-separated names do NOT match the YAML keys and
+  // silently fall back to the defaults (which left the photometric term disabled).
+  double photometricWeight;
+  dlio::declare_param(this, "odom/gicp/photometricWeight", photometricWeight, 0.0);
 
   // Intensity range correction parameters
-  this->intensity_alpha_ = this->declare_parameter<double>("odom.preprocessing.intensityAlpha", 2.0);
-  this->intensity_r_ref_ = this->declare_parameter<double>("odom.preprocessing.intensityRRef", 1.0);
-  int gradientKNeighbors = this->declare_parameter<int>("odom.gicp.gradientKNeighbors", 10);
+  dlio::declare_param(this, "odom/preprocessing/intensityAlpha", this->intensity_alpha_, 2.0);
+  dlio::declare_param(this, "odom/preprocessing/intensityRRef", this->intensity_r_ref_, 1.0);
+  int gradientKNeighbors;
+  dlio::declare_param(this, "odom/gicp/gradientKNeighbors", gradientKNeighbors, 10);
 
   this->gicp.setPhotometricWeight(photometricWeight);
   this->gicp.setGradientKNeighbors(gradientKNeighbors);
@@ -518,11 +523,13 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   {
     const float alpha   = static_cast<float>(this->intensity_alpha_);
     const float r_ref   = static_cast<float>(this->intensity_r_ref_);
-    for (auto& pt : original_scan_->points) {
-      float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
-      if (r > 0.f) {
-        pt.intensity = std::clamp(pt.intensity * std::pow(r / r_ref, alpha),
-                                  0.f, 255.f);
+    if (r_ref > 0.f) {  // r_ref <= 0 would divide-by-zero -> inf/NaN intensities
+      for (auto& pt : original_scan_->points) {
+        float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+        if (r > 0.f) {
+          pt.intensity = std::clamp(pt.intensity * std::pow(r / r_ref, alpha),
+                                    0.f, 255.f);
+        }
       }
     }
   }
@@ -1453,7 +1460,7 @@ void dlio::OdomNode::computeSpaciousness() {
   // compute range of points
   std::vector<float> ds;
 
-  for (int i = 0; i <= this->original_scan->points.size(); i++) {
+  for (int i = 0; i < this->original_scan->points.size(); i++) {
     float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
                         pow(this->original_scan->points[i].y, 2));
     ds.push_back(d);

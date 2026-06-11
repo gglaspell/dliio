@@ -245,8 +245,9 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(
         trans.prerotate(Eigen::AngleAxisf(dx[0], Eigen::Vector3f::UnitX()));
         trans.pretranslate(dx.tail<3>());
 
-        // Check convergence
-        if (dx.head<3>().norm() < transformation_epsilon_ && 
+        // Check convergence: rotation step (dx.head) vs rotation_epsilon_,
+        // translation step (dx.tail) vs transformation_epsilon_.
+        if (dx.head<3>().norm() < rotation_epsilon_ &&
             dx.tail<3>().norm() < transformation_epsilon_) {
             break;
         }
@@ -336,9 +337,13 @@ void NanoGICP<PointSource, PointTarget>::linearize(
             Eigen::Vector3f gradient = target_intensity_gradients_[target_index];
             
             if (gradient.norm() > 1e-6 && gradient.norm() < 100.0f) {
+                // Residual is (I_src - I_tgt); its Jacobian w.r.t. the (left-perturbation)
+                // pose is d/dθ (I_src - I_tgt(x)) = -gᵀ·dx/dθ = [ gᵀ·skew(x) | -gᵀ ].
+                // (Must match the geometric term's convention or the photometric step
+                //  ascends intensity error instead of descending it.)
                 Eigen::Matrix<float, 1, 6> J_photometric;
-                J_photometric.block<1, 3>(0, 0) = -gradient.transpose() * skew(transformed_source);
-                J_photometric.block<1, 3>(0, 3) = gradient.transpose();
+                J_photometric.block<1, 3>(0, 0) = gradient.transpose() * skew(transformed_source);
+                J_photometric.block<1, 3>(0, 3) = -gradient.transpose();
                 
                 float weight = photometric_weight_;
                 H_private[thread_num] += weight * J_photometric.transpose() * J_photometric;
