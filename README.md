@@ -8,6 +8,10 @@ Added `photometricWeight` (default value: 0.1) and `gradientKNeighbors` (default
 
 These new user-configurable parameters allow you to control the influence of the intensity information. In featureless enviroments a higher `photometricWeight` is preferred.
 
+Added `intensityAlpha` (default value: 2.0) and `intensityRRef` (default value: 1.0) to cfg/params.yaml.
+
+These new user-configurable parameters allow you to control the influence the range coorection. Specifically, `intensityAlpha` is the falloff exponent and `intensityRRef` is the reference range in metres.
+
 ---
 
 # Original ReadMe
