@@ -362,5 +362,8 @@ private:
   double geo_Kgb_;
   double geo_abias_max_;
   double geo_gbias_max_;
+  // Intensity range correction
+  double intensity_alpha_;
+  double intensity_r_ref_;
 
 };
