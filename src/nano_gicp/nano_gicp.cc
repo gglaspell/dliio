@@ -34,7 +34,7 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
   this->lambda_factor_ = 1e-9;
   this->photometric_weight_ = 0.0f;
   this->gradient_k_neighbors_ = 10;
-  this->intensity_gradient_threshold_ = 1e-6;
+  this->reflectivity_gradient_threshold_ = 1e-6;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -109,38 +109,38 @@ void NanoGICP<PointSource, PointTarget>::setInputTarget(const PointCloudTargetCo
 
   calculate_covariances(cloud, *target_kdtree_, target_covs_);
   
-  // Only calculate intensity gradients if photometric weight is enabled
+  // Only calculate reflectivity gradients if photometric weight is enabled
   if (photometric_weight_ > 1e-8) {
-      calculate_target_intensity_gradients();
+      calculate_target_reflectivity_gradients();
   } else {
-      target_intensity_gradients_.clear();
+      target_reflectivity_gradients_.clear();
       gradient_valid_.clear();
   }
 }
 
 template <typename PointSource, typename PointTarget>
-void NanoGICP<PointSource, PointTarget>::calculate_target_intensity_gradients() {
+void NanoGICP<PointSource, PointTarget>::calculate_target_reflectivity_gradients() {
     if (!target_) {
-        target_intensity_gradients_.clear();
+        target_reflectivity_gradients_.clear();
         gradient_valid_.clear();
         return;
     }
     
-    target_intensity_gradients_.assign(target_->size(), Eigen::Vector3f::Zero());
+    target_reflectivity_gradients_.assign(target_->size(), Eigen::Vector3f::Zero());
     gradient_valid_.assign(target_->size(), false);
     
     #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
     for (int i = 0; i < target_->size(); ++i) {
         Eigen::Vector3f gradient;
-        if(estimate_spatial_intensity_gradient(i, gradient)) {
-            target_intensity_gradients_[i] = gradient;
+        if(estimate_spatial_reflectivity_gradient(i, gradient)) {
+            target_reflectivity_gradients_[i] = gradient;
             gradient_valid_[i] = true;
         }
     }
 }
 
 template <typename PointSource, typename PointTarget>
-bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
+bool NanoGICP<PointSource, PointTarget>::estimate_spatial_reflectivity_gradient(
   int target_index, Eigen::Vector3f& gradient) const {
     
   if (target_index < 0 || !this->target_kdtree_ || target_index >= this->target_->size()) {
@@ -161,28 +161,28 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
   Eigen::MatrixXf A(found_neighbors, 4);
   Eigen::VectorXf i(found_neighbors);
   
-  float mean_intensity = 0.0f;
+  float mean_reflectivity = 0.0f;
   for (int j = 0; j < found_neighbors; ++j) {
     const auto& pt = this->target_->at(nn_indices[j]);
     A(j, 0) = pt.x;
     A(j, 1) = pt.y;
     A(j, 2) = pt.z;
     A(j, 3) = 1.0f;
-    i(j) = pt.intensity;
-    mean_intensity += pt.intensity;
+    i(j) = pt.reflectivity;
+    mean_reflectivity += pt.reflectivity;
   }
-  mean_intensity /= found_neighbors;
+  mean_reflectivity /= found_neighbors;
   
-  // Calculate intensity variance for validation
-  float intensity_variance = 0.0f;
+  // Calculate reflectivity variance for validation
+  float reflectivity_variance = 0.0f;
   for (int j = 0; j < found_neighbors; ++j) {
-      float diff = this->target_->at(nn_indices[j]).intensity - mean_intensity;
-      intensity_variance += diff * diff;
+      float diff = this->target_->at(nn_indices[j]).reflectivity - mean_reflectivity;
+      reflectivity_variance += diff * diff;
   }
-  intensity_variance /= found_neighbors;
+  reflectivity_variance /= found_neighbors;
   
-  // Reject if intensity is too uniform
-  if (intensity_variance < intensity_gradient_threshold_) {
+  // Reject if reflectivity is too uniform
+  if (reflectivity_variance < reflectivity_gradient_threshold_) {
       return false;
   }
   
@@ -207,7 +207,7 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
   
   // Reject unreasonably large or small gradients
   float gradient_mag = gradient.norm();
-  if (gradient_mag > 100.0f || gradient_mag < intensity_gradient_threshold_) {
+  if (gradient_mag > 100.0f || gradient_mag < reflectivity_gradient_threshold_) {
       return false;
   }
   
@@ -301,7 +301,7 @@ void NanoGICP<PointSource, PointTarget>::linearize(
     std::vector<Eigen::Matrix<float, 6, 6>> H_private(num_threads_, Eigen::Matrix<float, 6, 6>::Zero());
     std::vector<Eigen::Matrix<float, 6, 1>> b_private(num_threads_, Eigen::Matrix<float, 6, 1>::Zero());
     
-    bool use_photometric = (photometric_weight_ > 1e-8) && !target_intensity_gradients_.empty();
+    bool use_photometric = (photometric_weight_ > 1e-8) && !target_reflectivity_gradients_.empty();
     
     #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
     for(int i = 0; i < input_->size(); ++i) {
@@ -332,8 +332,8 @@ void NanoGICP<PointSource, PointTarget>::linearize(
         
         // Photometric term
         if (use_photometric && gradient_valid_[target_index]) {
-            float intensity_diff = source_pt.intensity - target_pt.intensity;
-            Eigen::Vector3f gradient = target_intensity_gradients_[target_index];
+            float reflectivity_diff = source_pt.reflectivity - target_pt.reflectivity;
+            Eigen::Vector3f gradient = target_reflectivity_gradients_[target_index];
             
             if (gradient.norm() > 1e-6 && gradient.norm() < 100.0f) {
                 Eigen::Matrix<float, 1, 6> J_photometric;
@@ -342,7 +342,7 @@ void NanoGICP<PointSource, PointTarget>::linearize(
                 
                 float weight = photometric_weight_;
                 H_private[thread_num] += weight * J_photometric.transpose() * J_photometric;
-                b_private[thread_num] += weight * J_photometric.transpose() * intensity_diff;
+                b_private[thread_num] += weight * J_photometric.transpose() * reflectivity_diff;
             }
         }
     }
