@@ -71,9 +71,10 @@ protected:
   void update_correspondences(const Eigen::Isometry3f& trans);
 
   template<typename PointT>
-  void calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, 
-                             nanoflann::KdTreeFLANN<PointT>& kdtree, 
-                             CovarianceList& covariances);
+  void calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
+                             nanoflann::KdTreeFLANN<PointT>& kdtree,
+                             CovarianceList& covariances,
+                             float* density = nullptr);
 
   bool estimate_spatial_intensity_gradient(int target_index, Eigen::Vector3f& gradient) const;
   void calculate_target_intensity_gradients();
@@ -83,6 +84,7 @@ protected:
   using pcl::Registration<PointSource, PointTarget>::input_;
   using pcl::Registration<PointSource, PointTarget>::target_;
   using pcl::Registration<PointSource, PointTarget>::corr_dist_threshold_;
+  using pcl::Registration<PointSource, PointTarget>::converged_;
   using pcl::Registration<PointSource, PointTarget>::final_transformation_;
   using pcl::Registration<PointSource, PointTarget>::max_iterations_;
   using pcl::Registration<PointSource, PointTarget>::transformation_epsilon_;

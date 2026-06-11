@@ -1,6 +1,7 @@
 #include "nano_gicp/nano_gicp.h"
 #include "dlio/dlio.h"
 #include <cmath>
+#include <numeric>
 #include <omp.h>
 #include <Eigen/Dense>
 #include <pcl/common/transforms.h>
@@ -115,8 +116,8 @@ void NanoGICP<PointSource, PointTarget>::setInputSource(const PointCloudSourceCo
   
   input_kdtree_.reset(new nanoflann::KdTreeFLANN<PointSource>(false));
   input_kdtree_->setInputCloud(cloud);
-  
-  calculate_covariances(cloud, *input_kdtree_, source_covs_);
+
+  calculate_covariances(cloud, *input_kdtree_, source_covs_, &source_density_);
 }
 
 template <typename PointSource, typename PointTarget>
@@ -256,7 +257,9 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(
     
     Eigen::Isometry3f trans = Eigen::Isometry3f::Identity();
     trans.matrix() = guess;
-    
+
+    this->converged_ = false;
+
     for (int i = 0; i < this->max_iterations_; ++i) {
         update_correspondences(trans);
         
@@ -285,6 +288,7 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(
         // translation step (dx.tail) vs transformation_epsilon_.
         if (dx.head<3>().norm() < rotation_epsilon_ &&
             dx.tail<3>().norm() < transformation_epsilon_) {
+            this->converged_ = true;
             break;
         }
     }
@@ -410,17 +414,26 @@ template <typename PointT>
 void NanoGICP<PointSource, PointTarget>::calculate_covariances(
     const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
     nanoflann::KdTreeFLANN<PointT>& kdtree,
-    CovarianceList& covs) {
-    
+    CovarianceList& covs,
+    float* density) {
+
     covs.resize(cloud->size());
-    
-    #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
+    float sum_k_sq_distances = 0.0f;
+
+    #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8) \
+        reduction(+:sum_k_sq_distances)
     for(int i = 0; i < cloud->size(); ++i) {
         std::vector<int> k_indices(k_correspondences_);
         std::vector<float> k_sq_distances(k_correspondences_);
-        
+
         kdtree.nearestKSearch(cloud->at(i), k_correspondences_, k_indices, k_sq_distances);
-        
+
+        // accumulate normalized neighborhood spread for the density metric
+        // (skip k_sq_distances[0], the query point itself)
+        const int normalization = ((k_correspondences_ - 1) * (2 + k_correspondences_)) / 2;
+        sum_k_sq_distances +=
+            std::accumulate(k_sq_distances.begin() + 1, k_sq_distances.end(), 0.0f) / normalization;
+
         Eigen::Matrix<float, 4, -1> neighbors(4, k_correspondences_);
         for(int j = 0; j < k_indices.size(); ++j) {
             neighbors.col(j) = cloud->at(k_indices[j]).getVector4fMap();
@@ -444,6 +457,10 @@ void NanoGICP<PointSource, PointTarget>::calculate_covariances(
         }
         
         covs[i] = cov;
+    }
+
+    if (density != nullptr && !cloud->empty()) {
+        *density = sum_k_sq_distances / cloud->size();
     }
 }
 

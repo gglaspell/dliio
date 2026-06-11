@@ -132,7 +132,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->first_scan_stamp = 0.;
   this->elapsed_time = 0.;
-  this->length_traversed;
+  this->length_traversed = 0.;
 
   this->convex_hull.setDimension(3);
   this->concave_hull.setDimension(3);
@@ -144,14 +144,14 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->gicp.setMaximumIterations(this->gicp_max_iter_);
   this->gicp.setTransformationEpsilon(this->gicp_transformation_ep_);
   this->gicp.setRotationEpsilon(this->gicp_rotation_ep_);
-  // this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+  this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
   this->gicp_temp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
   this->gicp_temp.setMaximumIterations(this->gicp_max_iter_);
   this->gicp_temp.setTransformationEpsilon(this->gicp_transformation_ep_);
   this->gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
-  // this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+  this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
   pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
   this->gicp.setSearchMethodSource(temp, true);
@@ -687,10 +687,12 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
     } else if (field.name == "time") {
       this->sensor = dlio::SensorType::VELODYNE;
       break;
-    } else if (field.name == "timestamp" && original_scan_->points[0].timestamp < 1e14) {
+    } else if (field.name == "timestamp" && !original_scan_->points.empty()
+               && original_scan_->points[0].timestamp < 1e14) {
       this->sensor = dlio::SensorType::HESAI;
       break;
-    } else if (field.name == "timestamp" && original_scan_->points[0].timestamp > 1e14) {
+    } else if (field.name == "timestamp" && !original_scan_->points.empty()
+               && original_scan_->points[0].timestamp > 1e14) {
       this->sensor = dlio::SensorType::LIVOX;
       break;
     }
@@ -796,8 +798,9 @@ void dlio::OdomNode::preprocessPoints() {
 
 void dlio::OdomNode::deskewPointcloud() {
 
-  pcl::PointCloud<PointType>::Ptr deskewed_scan_ = std::make_shared<pcl::PointCloud<PointType>>(1, this->original_scan->points.size());
-  // deskewed_scan_->points.resize(this->original_scan->points.size());
+  // pcl::PointCloud(width, height): N points wide, 1 row tall (unorganized)
+  pcl::PointCloud<PointType>::Ptr deskewed_scan_ =
+      std::make_shared<pcl::PointCloud<PointType>>(this->original_scan->points.size(), 1);
   // individual point timestamps should be relative to this time
   double sweep_ref_time = rclcpp::Time(this->scan_header_stamp).seconds();
 
