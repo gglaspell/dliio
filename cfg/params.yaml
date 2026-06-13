@@ -63,8 +63,16 @@
     # intensityRRef  : reference range in metres (anchor; 1.0 is a safe default)
     odom/preprocessing/intensityAlpha: 2.0
     odom/preprocessing/intensityRRef: 1.0
+    # Incidence-angle correction (Kashani radiometric model): additionally divide
+    # intensity by max(|beam . surface_normal|, cosMin). Corrects the grazing-angle
+    # darkening of distant ground/wall points that the range model alone leaves
+    # (and which otherwise looks like spurious intensity gradients). Organized
+    # scans only (uses the native grid for cheap normals); off by default.
+    # cosMin floors the divisor to avoid blow-up at grazing angles (0.2 ~= 78 deg).
+    odom/preprocessing/intensityIncidence: false
+    odom/preprocessing/intensityCosMin: 0.2
     odom/gicp/gradientKNeighbors: 10
-    
+
     odom/geo/Kp: 4.5
     odom/geo/Kv: 11.25
     odom/geo/Kq: 4.0

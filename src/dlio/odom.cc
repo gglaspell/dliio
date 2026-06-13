@@ -41,6 +41,8 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   // Intensity range correction parameters
   dlio::declare_param(this, "odom/preprocessing/intensityAlpha", this->intensity_alpha_, 2.0);
   dlio::declare_param(this, "odom/preprocessing/intensityRRef", this->intensity_r_ref_, 1.0);
+  dlio::declare_param(this, "odom/preprocessing/intensityIncidence", this->intensity_incidence_, false);
+  dlio::declare_param(this, "odom/preprocessing/intensityCosMin", this->intensity_cos_min_, 0.2);
   int gradientKNeighbors;
   dlio::declare_param(this, "odom/gicp/gradientKNeighbors", gradientKNeighbors, 10);
 
@@ -520,6 +522,13 @@ void dlio::OdomNode::publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen:
 
 }
 
+float dlio::OdomNode::correctIntensity(float intensity, float range, float cos_incidence,
+                                       float alpha, float r_ref, float cos_min) {
+  if (!(range > 0.f) || r_ref <= 0.f) { return intensity; }
+  const float c = std::max(cos_incidence, cos_min);  // c>0 (cos_min should be >0)
+  return std::clamp(intensity * std::pow(range / r_ref, alpha) / c, 0.f, 255.f);
+}
+
 void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedPtr& pc) {
 
   pcl::PointCloud<PointType>::Ptr original_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
@@ -557,29 +566,55 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
     }
   }
 
+  // Radiometric intensity correction (raw-intensity photometric path only):
+  // range falloff and, optionally, incidence angle (Kashani et al.). Applied
+  // BEFORE NaN removal so the organized grid is available for cheap per-point
+  // normals. Skipped for reflectivity, which is already range-normalized by
+  // the sensor.
+  if (!this->use_reflectivity_ && this->intensity_r_ref_ > 0.0) {
+    const float alpha   = static_cast<float>(this->intensity_alpha_);
+    const float r_ref   = static_cast<float>(this->intensity_r_ref_);
+    const float cos_min = static_cast<float>(this->intensity_cos_min_);
+    const bool organized = (original_scan_->height > 1 && original_scan_->width > 1);
+    const bool do_incidence = this->intensity_incidence_ && organized;
+
+    if (do_incidence) {
+      const int W = static_cast<int>(original_scan_->width);
+      const int H = static_cast<int>(original_scan_->height);
+      for (int row = 0; row < H; ++row) {
+        for (int col = 0; col < W; ++col) {
+          auto& pt = original_scan_->at(col, row);
+          const float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+          if (!(r > 0.f)) { continue; }
+          // Surface normal from organized neighbors (right & down); falls back
+          // to range-only (cos=1) at borders / where a neighbor is invalid.
+          float cos_a = 1.0f;
+          if (col + 1 < W && row + 1 < H) {
+            const auto& pr = original_scan_->at(col + 1, row);
+            const auto& pd = original_scan_->at(col, row + 1);
+            if (std::isfinite(pr.x) && std::isfinite(pd.x)) {
+              const Eigen::Vector3f c(pt.x, pt.y, pt.z);
+              Eigen::Vector3f n = (Eigen::Vector3f(pr.x, pr.y, pr.z) - c)
+                                  .cross(Eigen::Vector3f(pd.x, pd.y, pd.z) - c);
+              const float nn = n.norm();
+              if (nn > 1e-6f) { cos_a = std::abs((c / r).dot(n / nn)); }
+            }
+          }
+          pt.intensity = correctIntensity(pt.intensity, r, cos_a, alpha, r_ref, cos_min);
+        }
+      }
+    } else {
+      for (auto& pt : original_scan_->points) {
+        const float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+        pt.intensity = correctIntensity(pt.intensity, r, 1.0f, alpha, r_ref, cos_min);
+      }
+    }
+  }
+
   // Remove NaNs
   std::vector<int> idx;
   original_scan_->is_dense = false;
   pcl::removeNaNFromPointCloud(*original_scan_, *original_scan_, idx);
-
-  // Range-normalize intensity to remove distance-dependent falloff.
-  // I_corrected = clamp( I_raw * (r / r_ref)^alpha , 0, 255 )
-  // intensity_alpha_ : falloff exponent  (~2.0 for inverse-square law)
-  // intensity_r_ref_ : reference range in metres (anchor point, typically 1.0 m)
-  // Skipped when using reflectivity, which is already range-normalized by the sensor.
-  if (!this->use_reflectivity_) {
-    const float alpha   = static_cast<float>(this->intensity_alpha_);
-    const float r_ref   = static_cast<float>(this->intensity_r_ref_);
-    if (r_ref > 0.f) {  // r_ref <= 0 would divide-by-zero -> inf/NaN intensities
-      for (auto& pt : original_scan_->points) {
-        float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
-        if (r > 0.f) {
-          pt.intensity = std::clamp(pt.intensity * std::pow(r / r_ref, alpha),
-                                    0.f, 255.f);
-        }
-      }
-    }
-  }
 
   // Crop Box Filter
   this->crop.setInputCloud(original_scan_);

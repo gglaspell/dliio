@@ -47,6 +47,15 @@ public:
 
   void start();
 
+  // Radiometric intensity correction (range + optional incidence angle), the
+  // Kashani et al. model  I' = I * (r/r_ref)^alpha / max(cos_incidence, cos_min)
+  // clamped to [0,255]. cos_incidence = |beam . surface_normal| in [0,1]
+  // (1 = normal incidence; pass 1 to apply range-only). Static and
+  // side-effect-free for unit testing.
+  static float correctIntensity(float intensity, float range, float cos_incidence,
+                                 float alpha, float r_ref, float cos_min);
+
+
 private:
 
   struct State;
@@ -365,6 +374,10 @@ private:
   // Intensity range correction
   double intensity_alpha_;
   double intensity_r_ref_;
+  // Incidence-angle correction (organized scans only): divide by
+  // max(|beam.normal|, cos_min). Off by default.
+  bool intensity_incidence_;
+  double intensity_cos_min_;
   // Photometric channel: false = intensity, true = reflectivity
   bool use_reflectivity_;
 
