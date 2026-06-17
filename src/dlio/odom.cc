@@ -58,6 +58,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
         photometricChannel.c_str());
   }
 
+  this->photometric_active_ = (photometricWeight > 0.0);
   this->gicp.setPhotometricWeight(photometricWeight);
   this->gicp.setGradientKNeighbors(gradientKNeighbors);
   this->gicp.setPhotometricChannel(this->use_reflectivity_);
@@ -529,10 +530,54 @@ float dlio::OdomNode::correctIntensity(float intensity, float range, float cos_i
   return std::clamp(intensity * std::pow(range / r_ref, alpha) / c, 0.f, 255.f);
 }
 
+void dlio::OdomNode::resolvePhotometricChannel(bool has_reflectivity, bool has_intensity,
+                                               bool& use_reflectivity, bool& photometric_active) {
+  if (!photometric_active) { return; }                       // term off: nothing to resolve
+  if (!has_reflectivity && !has_intensity) {
+    photometric_active = false;                              // neither available -> disable
+  } else if (use_reflectivity && !has_reflectivity) {
+    use_reflectivity = false;                                // reflectivity -> intensity
+  } else if (!use_reflectivity && !has_intensity) {
+    use_reflectivity = true;                                 // intensity -> reflectivity
+  }
+}
+
 void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedPtr& pc) {
 
   pcl::PointCloud<PointType>::Ptr original_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
   pcl::fromROSMsg(*pc, *original_scan_);
+
+  // One-time intensity<->reflectivity fallback: resolve the configured photometric
+  // channel against the fields the sensor actually publishes, so a mismatch
+  // degrades gracefully instead of silently producing an all-zero (dead) term.
+  // Field availability is a property of the topic, so resolving once is enough;
+  // this runs on the first scan, before the background submap thread starts, so
+  // reconfiguring gicp/gicp_temp here is race-free.
+  if (!this->channel_resolved_) {
+    auto has_field = [&pc](const char* name) {
+      return std::any_of(pc->fields.begin(), pc->fields.end(),
+          [name](const sensor_msgs::msg::PointField& f){ return f.name == name; });
+    };
+    const bool has_refl = has_field("reflectivity");
+    const bool has_int  = has_field("intensity");
+    const bool was_refl = this->use_reflectivity_;
+    const bool was_active = this->photometric_active_;
+    resolvePhotometricChannel(has_refl, has_int, this->use_reflectivity_, this->photometric_active_);
+
+    if (!this->photometric_active_ && was_active) {
+      RCLCPP_WARN(this->get_logger(), "photometric term enabled but the cloud has neither "
+          "'reflectivity' nor 'intensity'; disabling the photometric term.");
+      this->gicp.setPhotometricWeight(0.f);
+      this->gicp_temp.setPhotometricWeight(0.f);
+    } else if (this->use_reflectivity_ != was_refl) {
+      RCLCPP_WARN(this->get_logger(), "photometricChannel=%s unavailable in the cloud; "
+          "falling back to '%s'.", was_refl ? "reflectivity" : "intensity",
+          this->use_reflectivity_ ? "reflectivity" : "range-corrected intensity");
+      this->gicp.setPhotometricChannel(this->use_reflectivity_);
+      this->gicp_temp.setPhotometricChannel(this->use_reflectivity_);
+    }
+    this->channel_resolved_ = true;
+  }
 
   // Populate the reflectivity channel from the raw message. pcl::fromROSMsg only
   // copies fields whose datatype matches our struct (reflectivity is a float here,

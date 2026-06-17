@@ -55,7 +55,9 @@
     #                  correction below.
     #   reflectivity - calibrated reflectivity (e.g. Ouster), already range-
     #                  normalized; the range correction is skipped automatically.
-    # Requires the input cloud to carry the chosen field.
+    # If the chosen field is absent from the cloud, the node falls back to the
+    # other channel automatically (logged once); the photometric term is disabled
+    # only if neither field is present.
     odom/gicp/photometricChannel: intensity
 
     # Intensity range correction (only applied when photometricChannel: intensity)
