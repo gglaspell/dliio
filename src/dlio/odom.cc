@@ -163,6 +163,11 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->crop.setMax(Eigen::Vector4f(this->crop_size_, this->crop_size_, this->crop_size_, 1.0));
 
   this->voxel.setLeafSize(this->vf_res_, this->vf_res_, this->vf_res_);
+  // pcl::VoxelGrid drops the custom 'reflectivity'/'intensity' fields (its
+  // centroid only averages a fixed set of known fields), zeroing the photometric
+  // channel and silently killing the photometric term. Save the leaf
+  // layout so preprocessPoints() can average those channels per voxel by hand.
+  this->voxel.setSaveLeafLayout(true);
 
   this->metrics.spaciousness.push_back(0.);
   this->metrics.density.push_back(this->gicp_max_corr_dist_);
@@ -744,6 +749,36 @@ void dlio::OdomNode::preprocessPoints() {
     pcl::PointCloud<PointType>::Ptr current_scan_ = std::make_shared<pcl::PointCloud<PointType>>(*this->deskewed_scan);
     this->voxel.setInputCloud(current_scan_);
     this->voxel.filter(*current_scan_);
+
+    // Re-attach the photometric channels VoxelGrid dropped: average each input
+    // point's reflectivity/intensity into the output voxel it fell into, using
+    // the saved leaf layout (O(N), no extra kd-tree). Without this the submap's
+    // channel is all-zero and every photometric gradient is rejected. Only the
+    // photometric GICP term reads these channels, so skip the transfer
+    // entirely in the default geometry-only path.
+    // Both channels are averaged regardless of which one is in use: the absent
+    // one is simply zero in -> zero out (the active channel is the one the term
+    // reads via use_reflectivity_), so single-channel sensors
+    // (intensity-only or reflectivity-only) are handled correctly.
+    const size_t M = current_scan_->size();
+    if (M > 0 && this->photometric_active_) {
+      std::vector<float> refl_sum(M, 0.f), int_sum(M, 0.f);
+      std::vector<int> cnt(M, 0);
+      for (const auto& p : this->deskewed_scan->points) {
+        const int idx = this->voxel.getCentroidIndex(p);
+        if (idx >= 0 && static_cast<size_t>(idx) < M) {
+          refl_sum[idx] += p.reflectivity;
+          int_sum[idx]  += p.intensity;
+          ++cnt[idx];
+        }
+      }
+      for (size_t i = 0; i < M; ++i) {
+        if (cnt[i] > 0) {
+          current_scan_->points[i].reflectivity = refl_sum[i] / cnt[i];
+          current_scan_->points[i].intensity    = int_sum[i]  / cnt[i];
+        }
+      }
+    }
     this->current_scan = current_scan_;
   } else {
     this->current_scan = this->deskewed_scan;
