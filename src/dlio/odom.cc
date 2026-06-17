@@ -1097,15 +1097,21 @@ bool dlio::OdomNode::imuMeasFromTimeRange(double start_time, double end_time,
   if (imu_it == this->imu_buffer.end()) {
     return false;
   }
-  imu_it++;
+  // imu_it now points to the first sample whose stamp < start_time.
+  // The oldest sample we want is at (imu_it - 1) in forward-iterator terms,
+  // which is exactly what reverse_iterator(imu_it) dereferenced in the original.
+  // Do NOT do imu_it++ here — that was the source of the off-by-one.
 
   // Build a time-ordered (oldest->newest) snapshot of the window.
-  // The buffer is newest-first, so walk from last_imu_it toward imu_it and reverse.
+  // Walk from imu_it-1 (oldest wanted) to last_imu_it (newest wanted),
+  // i.e. in reverse forward-iterator direction (newest-first buffer).
   imu_meas_out.clear();
   for (auto it = last_imu_it; ; ++it) {
     imu_meas_out.push_back(*it);
-    if (it == imu_it) break;
+    if (it == imu_it) break; // imu_it-1 is the last element to include
   }
+  // Remove the last-pushed element which is at imu_it (one past oldest wanted)
+  if (!imu_meas_out.empty()) imu_meas_out.pop_back();
   std::reverse(imu_meas_out.begin(), imu_meas_out.end());
 
   lock.unlock();
@@ -1514,7 +1520,8 @@ void dlio::OdomNode::pruneKeyframes() {
   int remove_idx = -1;
   float min_dist = std::numeric_limits<float>::infinity();
 
-  std::unique_lock<decltype(this->keyframes_mutex)> lock(this->keyframes_mutex);
+  // NOTE: called while keyframes_mutex is already held by updateKeyframes() —
+  //       do NOT acquire the mutex here.
   for (int i = 0; i < (int)this->keyframes.size(); i++) {
     for (int j = i + 1; j < (int)this->keyframes.size(); j++) {
       float d = (this->keyframes[i].first.first - this->keyframes[j].first.first).norm();
@@ -1532,7 +1539,6 @@ void dlio::OdomNode::pruneKeyframes() {
     this->keyframe_normals.erase(this->keyframe_normals.begin() + remove_idx);
     this->keyframe_transformations.erase(this->keyframe_transformations.begin() + remove_idx);
   }
-  lock.unlock();
 }
 
 void dlio::OdomNode::computeConvexHull() {
