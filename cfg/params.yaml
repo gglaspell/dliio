@@ -49,6 +49,10 @@
     odom/gicp/initLambdaFactor: 1e-9
 
     odom/gicp/photometricWeight: 0.1
+    # Full-scale of the photometric channel; the channel is divided by this so
+    # photometricWeight is sensor-independent. 255 covers 8-bit intensity and
+    # 8-bit Ouster calibrated reflectivity; use 65535 for raw 16-bit channels.
+    odom/gicp/photometricScale: 255.0
 
     # Photometric channel for the GICP intensity term:
     #   intensity    - raw return strength (range-dependent); uses the range

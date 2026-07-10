@@ -37,6 +37,8 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   // silently fall back to the defaults (which left the photometric term disabled).
   double photometricWeight;
   dlio::declare_param(this, "odom/gicp/photometricWeight", photometricWeight, 0.0);
+  double photometricScale;
+  dlio::declare_param(this, "odom/gicp/photometricScale", photometricScale, 255.0);
 
   // Intensity range correction parameters
   dlio::declare_param(this, "odom/preprocessing/intensityAlpha", this->intensity_alpha_, 2.0);
@@ -60,6 +62,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->photometric_active_ = (photometricWeight > 0.0);
   this->gicp.setPhotometricWeight(photometricWeight);
+  this->gicp.setPhotometricScale(static_cast<float>(photometricScale));
   this->gicp.setGradientKNeighbors(gradientKNeighbors);
   this->gicp.setPhotometricChannel(this->use_reflectivity_);
   

@@ -35,6 +35,7 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
   this->photometric_weight_ = 0.0f;
   this->gradient_k_neighbors_ = 10;
   this->photometric_use_reflectivity_ = false;
+  this->photometric_scale_ = 255.0f;
   this->intensity_gradient_threshold_ = 1e-6;
 }
 
@@ -84,6 +85,11 @@ void NanoGICP<PointSource, PointTarget>::setGradientKNeighbors(int k) {
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setPhotometricChannel(bool use_reflectivity) {
     this->photometric_use_reflectivity_ = use_reflectivity;
+}
+
+template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setPhotometricScale(float scale) {
+    this->photometric_scale_ = (scale > 0.f) ? scale : 1.0f;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -164,10 +170,14 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
     return false;
   }
   
-  // Read whichever channel (intensity or reflectivity) is selected.
+  // Read whichever channel (intensity or reflectivity) is selected, normalized
+  // by photometric_scale_ so gradients/residuals are dimensionless and
+  // photometricWeight transfers across sensors (0-255 intensity, uint16
+  // reflectivity, float channels...).
   const bool use_refl = this->photometric_use_reflectivity_;
-  auto chan = [use_refl](const PointTarget& p) {
-    return use_refl ? p.reflectivity : p.intensity;
+  const float inv_scale = 1.0f / this->photometric_scale_;
+  auto chan = [use_refl, inv_scale](const PointTarget& p) {
+    return (use_refl ? p.reflectivity : p.intensity) * inv_scale;
   };
 
   Eigen::MatrixXf A(found_neighbors, 4);
@@ -343,11 +353,12 @@ void NanoGICP<PointSource, PointTarget>::linearize(
         H_private[thread_num] += J_geometric.transpose() * M * J_geometric;
         b_private[thread_num] += J_geometric.transpose() * M * residual;
         
-        // Photometric term
+        // Photometric term (channel normalized by photometric_scale_ to match
+        // the units the target gradients were estimated in)
         if (use_photometric && gradient_valid_[target_index]) {
             float src_val = photometric_use_reflectivity_ ? source_pt.reflectivity : source_pt.intensity;
             float tgt_val = photometric_use_reflectivity_ ? target_pt.reflectivity : target_pt.intensity;
-            float intensity_diff = src_val - tgt_val;
+            float intensity_diff = (src_val - tgt_val) / photometric_scale_;
             Eigen::Vector3f gradient = target_intensity_gradients_[target_index];
             
             if (gradient.norm() > 1e-6 && gradient.norm() < 100.0f) {

@@ -51,6 +51,10 @@ public:
   // Selects which point field feeds the photometric term:
   // false = intensity (default), true = reflectivity.
   void setPhotometricChannel(bool use_reflectivity);
+  // Full-scale value of the photometric channel (default 255). The channel is
+  // divided by this before gradient estimation and residuals, so
+  // photometricWeight is in normalized units and transfers across sensors.
+  void setPhotometricScale(float scale);
 
   virtual void setInputSource(const PointCloudSourceConstPtr& cloud) override;
   virtual void setInputTarget(const PointCloudTargetConstPtr& cloud) override;
@@ -101,6 +105,7 @@ protected:
   float photometric_weight_;
   int gradient_k_neighbors_;
   bool photometric_use_reflectivity_;  // false = intensity, true = reflectivity
+  float photometric_scale_;            // channel full-scale; channel is divided by this
   
   std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> target_intensity_gradients_;
   std::vector<bool> gradient_valid_;
