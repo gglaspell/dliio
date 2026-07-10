@@ -183,12 +183,19 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
   Eigen::MatrixXf A(found_neighbors, 4);
   Eigen::VectorXf i(found_neighbors);
 
+  // Solve in coordinates centered on the query point: the gradient is
+  // translation-invariant, but with absolute world coordinates cond(AtA)
+  // grows ~ ||x||^4, so the condition-number rejection below would fire
+  // based on distance from the map origin rather than surface geometry
+  // (the photometric term would silently fade out as the map grows).
+  const auto& query_pt = this->target_->at(target_index);
+
   float mean_intensity = 0.0f;
   for (int j = 0; j < found_neighbors; ++j) {
     const auto& pt = this->target_->at(nn_indices[j]);
-    A(j, 0) = pt.x;
-    A(j, 1) = pt.y;
-    A(j, 2) = pt.z;
+    A(j, 0) = pt.x - query_pt.x;
+    A(j, 1) = pt.y - query_pt.y;
+    A(j, 2) = pt.z - query_pt.z;
     A(j, 3) = 1.0f;
     i(j) = chan(pt);
     mean_intensity += chan(pt);
