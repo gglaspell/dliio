@@ -594,7 +594,8 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   // copies fields whose datatype matches our struct (reflectivity is a float here,
   // but sensors publish it as uint8/uint16), so copy it explicitly with conversion.
   // Done before NaN removal so indices still line up 1:1 with the message.
-  if (this->use_reflectivity_) {
+  // Skipped when the photometric term is off: no wasted per-point work.
+  if (this->photometric_active_ && this->use_reflectivity_) {
     auto rfield = std::find_if(pc->fields.begin(), pc->fields.end(),
         [](const sensor_msgs::msg::PointField& f){ return f.name == "reflectivity"; });
     if (rfield != pc->fields.end()) {
@@ -625,9 +626,10 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   // Radiometric intensity correction (raw-intensity photometric path only):
   // range falloff and, optionally, incidence angle (Kashani et al.). Applied
   // BEFORE NaN removal so the organized grid is available for cheap per-point
-  // normals. Skipped for reflectivity, which is already range-normalized by
-  // the sensor.
-  if (!this->use_reflectivity_ && this->intensity_r_ref_ > 0.0) {
+  // normals. Skipped for reflectivity (sensor-calibrated) and when the
+  // photometric term is off, so downstream consumers of the deskewed cloud
+  // and keyframes only see modified intensities when the feature is in use.
+  if (this->photometric_active_ && !this->use_reflectivity_ && this->intensity_r_ref_ > 0.0) {
     const float alpha   = static_cast<float>(this->intensity_alpha_);
     const float r_ref   = static_cast<float>(this->intensity_r_ref_);
     const float cos_min = static_cast<float>(this->intensity_cos_min_);
