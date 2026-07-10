@@ -53,6 +53,10 @@
     # photometricWeight is sensor-independent. 255 covers 8-bit intensity and
     # 8-bit Ouster calibrated reflectivity; use 65535 for raw 16-bit channels.
     odom/gicp/photometricScale: 255.0
+    # Huber threshold on the normalized photometric residual: residuals beyond
+    # this are downweighted (robust to specular/wet-surface outliers).
+    # 0.05 = ~13 intensity counts at photometricScale 255. <= 0 disables.
+    odom/gicp/photometricHuberDelta: 0.05
 
     # Photometric channel for the GICP intensity term:
     #   intensity    - raw return strength (range-dependent); uses the range

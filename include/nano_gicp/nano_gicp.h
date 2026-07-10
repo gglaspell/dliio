@@ -55,6 +55,9 @@ public:
   // divided by this before gradient estimation and residuals, so
   // photometricWeight is in normalized units and transfers across sensors.
   void setPhotometricScale(float scale);
+  // Huber threshold on the (normalized) photometric residual; residuals
+  // beyond it are IRLS-downweighted. <= 0 disables robustification.
+  void setPhotometricHuberDelta(float delta);
 
   virtual void setInputSource(const PointCloudSourceConstPtr& cloud) override;
   virtual void setInputTarget(const PointCloudTargetConstPtr& cloud) override;
@@ -106,6 +109,7 @@ protected:
   int gradient_k_neighbors_;
   bool photometric_use_reflectivity_;  // false = intensity, true = reflectivity
   float photometric_scale_;            // channel full-scale; channel is divided by this
+  float photometric_huber_delta_;      // Huber threshold (normalized units); <=0 disables
   
   std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> target_intensity_gradients_;
   std::vector<bool> gradient_valid_;
