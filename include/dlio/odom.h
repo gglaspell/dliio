@@ -168,6 +168,7 @@ private:
 
   // Trajectory
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
+  std::mutex trajectory_mtx;
   double length_traversed;
 
   // Keyframes
@@ -227,6 +228,8 @@ private:
   std::vector<double> comp_times;
   std::vector<double> imu_rates;
   std::vector<double> lidar_rates;
+  std::mutex stats_mtx;   // guards comp_times / imu_rates / lidar_rates (written on the
+                          // lidar+imu callbacks, read on the debug thread)
 
   double first_scan_stamp;
   double elapsed_time;
@@ -319,6 +322,7 @@ private:
     std::vector<float> spaciousness;
     std::vector<float> density;
   }; Metrics metrics;
+  std::mutex metrics_mtx;
 
   std::string cpu_type;
   std::vector<double> cpu_percents;

@@ -75,7 +75,7 @@ link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
 # NanoFLANN
-add_library(nanoflann STATIC src/nano_gicp/nanoflann.cc)
+ament_auto_add_library(nanoflann STATIC src/nano_gicp/nanoflann.cc)
 target_compile_definitions(nanoflann PRIVATE PCL_NO_PRECOMPILE)
 target_include_directories(nanoflann PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -84,7 +84,7 @@ target_include_directories(nanoflann PUBLIC
 target_link_libraries(nanoflann PUBLIC ${PCL_LIBRARIES})
 
 # NanoGICP
-add_library(nano_gicp STATIC
+ament_auto_add_library(nano_gicp STATIC
   src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
@@ -123,5 +123,10 @@ target_link_libraries(dlio_map_node
 install(DIRECTORY cfg launch
   DESTINATION share/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+endif()
 
 ament_auto_package()

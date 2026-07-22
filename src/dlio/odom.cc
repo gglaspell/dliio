@@ -90,7 +90,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->br = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
-  this->publish_timer = this->create_wall_timer(std::chrono::duration<double>(0.01), 
+  this->publish_timer = this->create_timer(std::chrono::milliseconds(10), 
       std::bind(&dlio::OdomNode::publishPose, this));
 
   this->T = Eigen::Matrix4f::Identity();
@@ -218,7 +218,12 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
 }
 
-dlio::OdomNode::~OdomNode() {}
+dlio::OdomNode::~OdomNode() {
+  if (this->publish_thread.joinable()) this->publish_thread.join();
+  if (this->publish_keyframe_thread.joinable()) this->publish_keyframe_thread.join();
+  if (this->metrics_thread.joinable()) this->metrics_thread.join();
+  if (this->debug_thread.joinable()) this->debug_thread.join();
+}
 
 void dlio::OdomNode::getParams() {
 
@@ -362,6 +367,8 @@ void dlio::OdomNode::start() {
 
 void dlio::OdomNode::publishPose() {
 
+  std::lock_guard<std::mutex> lock(this->geo.mtx);
+
   // nav_msgs::msg::Odometry
   this->odom_ros.header.stamp = this->imu_stamp;
   this->odom_ros.header.frame_id = this->odom_frame;
@@ -405,6 +412,8 @@ void dlio::OdomNode::publishPose() {
 
 void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud) {
   this->publishCloud(published_cloud, T_cloud);
+
+  std::lock_guard<std::mutex> lock(this->geo.mtx);
 
   // nav_msgs::msg::Path
   this->path_ros.header.stamp = this->imu_stamp;
@@ -969,7 +978,9 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   this->main_loop_running = true;
   lock.unlock();
 
-  double then = this->now().seconds();
+  // Wall-clock start of this callback's computation. steady_clock (not this->now(),
+  // which follows sim time) so comp_times reflects real processing cost under replay.
+  auto cb_start = std::chrono::steady_clock::now();
 
   if (this->first_scan_stamp == 0.) {
     this->first_scan_stamp = rclcpp::Time(pc->header.stamp).seconds();
@@ -996,8 +1007,8 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   }
 
   // Compute Metrics
+  if (this->metrics_thread.joinable()) this->metrics_thread.join();
   this->metrics_thread = std::thread( &dlio::OdomNode::computeMetrics, this );
-  this->metrics_thread.detach();
 
   // Set Adaptive Parameters
   if (this->adaptive_params_) {
@@ -1036,10 +1047,15 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   }
 
   // Update trajectory
+  this->trajectory_mtx.lock();
   this->trajectory.push_back( std::make_pair(this->state.p, this->state.q) );
+  this->trajectory_mtx.unlock();
 
   // Update time stamps
-  this->lidar_rates.push_back( 1. / (this->scan_stamp - this->prev_scan_stamp) );
+  {
+    std::lock_guard<std::mutex> lock(this->stats_mtx);
+    this->lidar_rates.push_back( 1. / (this->scan_stamp - this->prev_scan_stamp) );
+  }
   this->prev_scan_stamp = this->scan_stamp;
   this->elapsed_time = this->scan_stamp - this->first_scan_stamp;
 
@@ -1050,16 +1066,20 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   } else {
     published_cloud = this->deskewed_scan;
   }
+  if (this->publish_thread.joinable()) this->publish_thread.join();
   this->publish_thread = std::thread( &dlio::OdomNode::publishToROS, this, published_cloud, this->T_corr );
-  this->publish_thread.detach();
 
   // Update some statistics
-  this->comp_times.push_back(this->now().seconds() - then);
+  double comp_time = std::chrono::duration<double>(std::chrono::steady_clock::now() - cb_start).count();
+  {
+    std::lock_guard<std::mutex> lock(this->stats_mtx);
+    this->comp_times.push_back(comp_time);
+  }
   this->gicp_hasConverged = this->gicp.hasConverged();
 
   // Debug statements and publish custom DLIO message
+  if (this->debug_thread.joinable()) this->debug_thread.join();
   this->debug_thread = std::thread( &dlio::OdomNode::debug, this );
-  this->debug_thread.detach();
 
   this->geo.first_opt_done = true;
 
@@ -1181,7 +1201,10 @@ void dlio::OdomNode::callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
 
     double dt = imu_stamp_secs - this->prev_imu_stamp;
     if (dt == 0) { dt = 1.0/200.0; }
-    this->imu_rates.push_back( 1./dt );
+    {
+      std::lock_guard<std::mutex> lock(this->stats_mtx);
+      this->imu_rates.push_back( 1./dt );
+    }
 
     // Apply the calibrated bias to the new IMU measurements
     this->imu_meas.stamp = imu_stamp_secs;
@@ -1256,7 +1279,13 @@ bool dlio::OdomNode::imuMeasFromTimeRange(double start_time, double end_time,
   if (this->imu_buffer.empty() || this->imu_buffer.front().stamp < end_time) {
     // Wait for the latest IMU data
     std::unique_lock<decltype(this->mtx_imu)> lock(this->mtx_imu);
-    this->cv_imu_stamp.wait(lock, [this, &end_time]{ return this->imu_buffer.front().stamp >= end_time; });
+    this->cv_imu_stamp.wait_for(lock, std::chrono::milliseconds(100), [this, &end_time]{ return !this->imu_buffer.empty() && this->imu_buffer.front().stamp >= end_time; });
+  }
+
+  // wait_for may time out with the buffer still empty; iterating it below would walk
+  // past end() (UB). Bail out — the caller treats false as "not enough IMU data".
+  if (this->imu_buffer.empty()) {
+    return false;
   }
 
   auto imu_it = this->imu_buffer.begin();
@@ -1647,6 +1676,7 @@ void dlio::OdomNode::computeSpaciousness() {
   median_prev = median_lpf;
 
   // push
+  std::lock_guard<std::mutex> lock(this->metrics_mtx);
   this->metrics.spaciousness.push_back( median_lpf );
 
 }
@@ -1665,6 +1695,7 @@ void dlio::OdomNode::computeDensity() {
   float density_lpf = 0.95*density_prev + 0.05*density;
   density_prev = density_lpf;
 
+  std::lock_guard<std::mutex> lock(this->metrics_mtx);
   this->metrics.density.push_back( density_lpf );
 
 }
@@ -1832,7 +1863,9 @@ void dlio::OdomNode::updateKeyframes() {
 void dlio::OdomNode::setAdaptiveParams() {
 
   // Spaciousness
+  this->metrics_mtx.lock();
   float sp = this->metrics.spaciousness.back();
+  this->metrics_mtx.unlock();
 
   if (sp < 0.5) { sp = 0.5; }
   if (sp > 5.0) { sp = 5.0; }
@@ -1840,7 +1873,9 @@ void dlio::OdomNode::setAdaptiveParams() {
   this->keyframe_thresh_dist_ = sp;
 
   // Density
+  this->metrics_mtx.lock();
   float den = this->metrics.density.back();
+  this->metrics_mtx.unlock();
 
   if (den < 0.5*this->gicp_max_corr_dist_) { den = 0.5*this->gicp_max_corr_dist_; }
   if (den > 2.0*this->gicp_max_corr_dist_) { den = 2.0*this->gicp_max_corr_dist_; }
@@ -2001,8 +2036,8 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
     this->keyframes[i].second = transformed_keyframe;
     this->keyframe_normals[i] = transformed_covariances;
 
+    if (this->publish_keyframe_thread.joinable()) this->publish_keyframe_thread.join();
     this->publish_keyframe_thread = std::thread( &dlio::OdomNode::publishKeyframe, this, this->keyframes[i], this->keyframe_timestamps[i] );
-    this->publish_keyframe_thread.detach();
   }
 
   lock.unlock();
@@ -2024,6 +2059,7 @@ void dlio::OdomNode::debug() {
   double length_traversed = 0.;
   Eigen::Vector3f p_curr = Eigen::Vector3f(0., 0., 0.);
   Eigen::Vector3f p_prev = Eigen::Vector3f(0., 0., 0.);
+  this->trajectory_mtx.lock();
   for (const auto& t : this->trajectory) {
     if (p_prev == Eigen::Vector3f(0., 0., 0.)) {
       p_prev = t.first;
@@ -2037,29 +2073,44 @@ void dlio::OdomNode::debug() {
       p_prev = p_curr;
     }
   }
+  this->trajectory_mtx.unlock();
   this->length_traversed = length_traversed;
 
-  // Average computation time
-  double avg_comp_time =
-    std::accumulate(this->comp_times.begin(), this->comp_times.end(), 0.0) / this->comp_times.size();
-
-  // Average sensor rates
+  // Snapshot all comp_times / imu_rates / lidar_rates derived values under stats_mtx:
+  // these vectors are mutated on the lidar+imu callbacks while this runs on the debug
+  // thread, so every read (incl. .back()/max_element in the print block below) must be
+  // taken here rather than touched inline.
   int win_size = 100;
-  double avg_imu_rate;
-  double avg_lidar_rate;
-  if (this->imu_rates.size() < win_size) {
-    avg_imu_rate =
-      std::accumulate(this->imu_rates.begin(), this->imu_rates.end(), 0.0) / this->imu_rates.size();
-  } else {
-    avg_imu_rate =
-      std::accumulate(this->imu_rates.end()-win_size, this->imu_rates.end(), 0.0) / win_size;
-  }
-  if (this->lidar_rates.size() < win_size) {
-    avg_lidar_rate =
-      std::accumulate(this->lidar_rates.begin(), this->lidar_rates.end(), 0.0) / this->lidar_rates.size();
-  } else {
-    avg_lidar_rate =
-      std::accumulate(this->lidar_rates.end()-win_size, this->lidar_rates.end(), 0.0) / win_size;
+  double avg_comp_time = 0., last_comp_time = 0., max_comp_time = 0.;
+  double avg_imu_rate = 0., avg_lidar_rate = 0.;
+  {
+    std::lock_guard<std::mutex> lock(this->stats_mtx);
+
+    if (!this->comp_times.empty()) {
+      avg_comp_time =
+        std::accumulate(this->comp_times.begin(), this->comp_times.end(), 0.0) / this->comp_times.size();
+      last_comp_time = this->comp_times.back();
+      max_comp_time = *std::max_element(this->comp_times.begin(), this->comp_times.end());
+    }
+
+    if (!this->imu_rates.empty()) {
+      if (this->imu_rates.size() < static_cast<size_t>(win_size)) {
+        avg_imu_rate =
+          std::accumulate(this->imu_rates.begin(), this->imu_rates.end(), 0.0) / this->imu_rates.size();
+      } else {
+        avg_imu_rate =
+          std::accumulate(this->imu_rates.end()-win_size, this->imu_rates.end(), 0.0) / win_size;
+      }
+    }
+    if (!this->lidar_rates.empty()) {
+      if (this->lidar_rates.size() < static_cast<size_t>(win_size)) {
+        avg_lidar_rate =
+          std::accumulate(this->lidar_rates.begin(), this->lidar_rates.end(), 0.0) / this->lidar_rates.size();
+      } else {
+        avg_lidar_rate =
+          std::accumulate(this->lidar_rates.end()-win_size, this->lidar_rates.end(), 0.0) / win_size;
+      }
+    }
   }
 
   // RAM Usage
@@ -2204,9 +2255,9 @@ void dlio::OdomNode::debug() {
 
   std::cout << std::right << std::setprecision(2) << std::fixed;
   std::cout << "| Computation Time :: "
-    << std::setfill(' ') << std::setw(6) << this->comp_times.back()*1000. << " ms    // Avg: "
+    << std::setfill(' ') << std::setw(6) << last_comp_time*1000. << " ms    // Avg: "
     << std::setw(6) << avg_comp_time*1000. << " / Max: "
-    << std::setw(6) << *std::max_element(this->comp_times.begin(), this->comp_times.end())*1000.
+    << std::setw(6) << max_comp_time*1000.
     << "     |" << std::endl;
   std::cout << "| Cores Utilized   :: "
     << std::setfill(' ') << std::setw(6) << (cpu_percent/100.) * this->numProcessors << " cores // Avg: "
