@@ -16,6 +16,7 @@
 #include <queue>
 
 #include "rclcpp/qos.hpp"
+#include <sensor_msgs/point_cloud2_iterator.hpp>
 
 dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
@@ -31,11 +32,42 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->deskew_status = false;
   this->deskew_size = 0;
 
-  double photometricWeight = this->declare_parameter<double>("odom.gicp.photometricWeight", 0.0);
-  int gradientKNeighbors = this->declare_parameter<int>("odom.gicp.gradientKNeighbors", 10);
+  // NOTE: declare with slash-separated names via dlio::declare_param so these match
+  // the keys in cfg/params.yaml. Dot-separated names do NOT match the YAML keys and
+  // silently fall back to the defaults (which left the photometric term disabled).
+  double photometricWeight;
+  dlio::declare_param(this, "odom/gicp/photometricWeight", photometricWeight, 0.0);
+  double photometricScale;
+  dlio::declare_param(this, "odom/gicp/photometricScale", photometricScale, 255.0);
+  double photometricHuberDelta;
+  dlio::declare_param(this, "odom/gicp/photometricHuberDelta", photometricHuberDelta, 0.05);
 
+  // Intensity range correction parameters
+  dlio::declare_param(this, "odom/preprocessing/intensityAlpha", this->intensity_alpha_, 2.0);
+  dlio::declare_param(this, "odom/preprocessing/intensityRRef", this->intensity_r_ref_, 1.0);
+  dlio::declare_param(this, "odom/preprocessing/intensityIncidence", this->intensity_incidence_, false);
+  dlio::declare_param(this, "odom/preprocessing/intensityCosMin", this->intensity_cos_min_, 0.2);
+  int gradientKNeighbors;
+  dlio::declare_param(this, "odom/gicp/gradientKNeighbors", gradientKNeighbors, 10);
+
+  // Photometric channel: "intensity" (range-dependent; pairs with the range
+  // correction below) or "reflectivity" (e.g. Ouster calibrated reflectivity,
+  // already range-normalized -> the range correction is skipped for it).
+  std::string photometricChannel;
+  dlio::declare_param(this, "odom/gicp/photometricChannel", photometricChannel, std::string("intensity"));
+  this->use_reflectivity_ = (photometricChannel == "reflectivity");
+  if (photometricChannel != "intensity" && photometricChannel != "reflectivity") {
+    RCLCPP_WARN(this->get_logger(),
+        "Unknown odom/gicp/photometricChannel '%s'; defaulting to 'intensity'.",
+        photometricChannel.c_str());
+  }
+
+  this->photometric_active_ = (photometricWeight > 0.0);
   this->gicp.setPhotometricWeight(photometricWeight);
+  this->gicp.setPhotometricScale(static_cast<float>(photometricScale));
+  this->gicp.setPhotometricHuberDelta(static_cast<float>(photometricHuberDelta));
   this->gicp.setGradientKNeighbors(gradientKNeighbors);
+  this->gicp.setPhotometricChannel(this->use_reflectivity_);
   
   this->lidar_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   auto lidar_sub_opt = rclcpp::SubscriptionOptions();
@@ -58,7 +90,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->br = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
-  this->publish_timer = this->create_wall_timer(std::chrono::duration<double>(0.01), 
+  this->publish_timer = this->create_timer(std::chrono::milliseconds(10), 
       std::bind(&dlio::OdomNode::publishPose, this));
 
   this->T = Eigen::Matrix4f::Identity();
@@ -100,7 +132,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->first_scan_stamp = 0.;
   this->elapsed_time = 0.;
-  this->length_traversed;
+  this->length_traversed = 0.;
 
   this->convex_hull.setDimension(3);
   this->concave_hull.setDimension(3);
@@ -112,14 +144,14 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->gicp.setMaximumIterations(this->gicp_max_iter_);
   this->gicp.setTransformationEpsilon(this->gicp_transformation_ep_);
   this->gicp.setRotationEpsilon(this->gicp_rotation_ep_);
-  // this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+  this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
   this->gicp_temp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
   this->gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
   this->gicp_temp.setMaximumIterations(this->gicp_max_iter_);
   this->gicp_temp.setTransformationEpsilon(this->gicp_transformation_ep_);
   this->gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
-  // this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+  this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
   pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
   this->gicp.setSearchMethodSource(temp, true);
@@ -137,6 +169,11 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->crop.setMax(Eigen::Vector4f(this->crop_size_, this->crop_size_, this->crop_size_, 1.0));
 
   this->voxel.setLeafSize(this->vf_res_, this->vf_res_, this->vf_res_);
+  // pcl::VoxelGrid drops the custom 'reflectivity'/'intensity' fields (its
+  // centroid only averages a fixed set of known fields), zeroing the photometric
+  // channel and silently killing the photometric term. Save the leaf
+  // layout so preprocessPoints() can average those channels per voxel by hand.
+  this->voxel.setSaveLeafLayout(true);
 
   this->metrics.spaciousness.push_back(0.);
   this->metrics.density.push_back(this->gicp_max_corr_dist_);
@@ -181,7 +218,12 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
 }
 
-dlio::OdomNode::~OdomNode() {}
+dlio::OdomNode::~OdomNode() {
+  if (this->publish_thread.joinable()) this->publish_thread.join();
+  if (this->publish_keyframe_thread.joinable()) this->publish_keyframe_thread.join();
+  if (this->metrics_thread.joinable()) this->metrics_thread.join();
+  if (this->debug_thread.joinable()) this->debug_thread.join();
+}
 
 void dlio::OdomNode::getParams() {
 
@@ -325,6 +367,8 @@ void dlio::OdomNode::start() {
 
 void dlio::OdomNode::publishPose() {
 
+  std::lock_guard<std::mutex> lock(this->geo.mtx);
+
   // nav_msgs::msg::Odometry
   this->odom_ros.header.stamp = this->imu_stamp;
   this->odom_ros.header.frame_id = this->odom_frame;
@@ -368,6 +412,8 @@ void dlio::OdomNode::publishPose() {
 
 void dlio::OdomNode::publishToROS(pcl::PointCloud<PointType>::ConstPtr published_cloud, Eigen::Matrix4f T_cloud) {
   this->publishCloud(published_cloud, T_cloud);
+
+  std::lock_guard<std::mutex> lock(this->geo.mtx);
 
   // nav_msgs::msg::Path
   this->path_ros.header.stamp = this->imu_stamp;
@@ -497,10 +543,140 @@ void dlio::OdomNode::publishKeyframe(std::pair<std::pair<Eigen::Vector3f, Eigen:
 
 }
 
+float dlio::OdomNode::correctIntensity(float intensity, float range, float cos_incidence,
+                                       float alpha, float r_ref, float cos_min) {
+  if (!(range > 0.f) || r_ref <= 0.f) { return intensity; }
+  const float c = std::max(cos_incidence, cos_min);  // c>0 (cos_min should be >0)
+  return std::clamp(intensity * std::pow(range / r_ref, alpha) / c, 0.f, 255.f);
+}
+
+void dlio::OdomNode::resolvePhotometricChannel(bool has_reflectivity, bool has_intensity,
+                                               bool& use_reflectivity, bool& photometric_active) {
+  if (!photometric_active) { return; }                       // term off: nothing to resolve
+  if (!has_reflectivity && !has_intensity) {
+    photometric_active = false;                              // neither available -> disable
+  } else if (use_reflectivity && !has_reflectivity) {
+    use_reflectivity = false;                                // reflectivity -> intensity
+  } else if (!use_reflectivity && !has_intensity) {
+    use_reflectivity = true;                                 // intensity -> reflectivity
+  }
+}
+
 void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedPtr& pc) {
 
   pcl::PointCloud<PointType>::Ptr original_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
   pcl::fromROSMsg(*pc, *original_scan_);
+
+  // One-time intensity<->reflectivity fallback: resolve the configured photometric
+  // channel against the fields the sensor actually publishes, so a mismatch
+  // degrades gracefully instead of silently producing an all-zero (dead) term.
+  // Field availability is a property of the topic, so resolving once is enough;
+  // this runs on the first scan, before the background submap thread starts, so
+  // reconfiguring gicp/gicp_temp here is race-free.
+  if (!this->channel_resolved_) {
+    auto has_field = [&pc](const char* name) {
+      return std::any_of(pc->fields.begin(), pc->fields.end(),
+          [name](const sensor_msgs::msg::PointField& f){ return f.name == name; });
+    };
+    const bool has_refl = has_field("reflectivity");
+    const bool has_int  = has_field("intensity");
+    const bool was_refl = this->use_reflectivity_;
+    const bool was_active = this->photometric_active_;
+    resolvePhotometricChannel(has_refl, has_int, this->use_reflectivity_, this->photometric_active_);
+
+    if (!this->photometric_active_ && was_active) {
+      RCLCPP_WARN(this->get_logger(), "photometric term enabled but the cloud has neither "
+          "'reflectivity' nor 'intensity'; disabling the photometric term.");
+      this->gicp.setPhotometricWeight(0.f);
+      this->gicp_temp.setPhotometricWeight(0.f);
+    } else if (this->use_reflectivity_ != was_refl) {
+      RCLCPP_WARN(this->get_logger(), "photometricChannel=%s unavailable in the cloud; "
+          "falling back to '%s'.", was_refl ? "reflectivity" : "intensity",
+          this->use_reflectivity_ ? "reflectivity" : "range-corrected intensity");
+      this->gicp.setPhotometricChannel(this->use_reflectivity_);
+      this->gicp_temp.setPhotometricChannel(this->use_reflectivity_);
+    }
+    this->channel_resolved_ = true;
+  }
+
+  // Populate the reflectivity channel from the raw message. pcl::fromROSMsg only
+  // copies fields whose datatype matches our struct (reflectivity is a float here,
+  // but sensors publish it as uint8/uint16), so copy it explicitly with conversion.
+  // Done before NaN removal so indices still line up 1:1 with the message.
+  // Skipped when the photometric term is off: no wasted per-point work.
+  if (this->photometric_active_ && this->use_reflectivity_) {
+    auto rfield = std::find_if(pc->fields.begin(), pc->fields.end(),
+        [](const sensor_msgs::msg::PointField& f){ return f.name == "reflectivity"; });
+    if (rfield != pc->fields.end()) {
+      const size_t n = original_scan_->points.size();
+      auto fill = [&](auto it) {
+        for (size_t i = 0; i < n; ++i, ++it) {
+          original_scan_->points[i].reflectivity = static_cast<float>(*it);
+        }
+      };
+      using PF = sensor_msgs::msg::PointField;
+      switch (rfield->datatype) {
+        case PF::UINT8:   fill(sensor_msgs::PointCloud2ConstIterator<uint8_t >(*pc, "reflectivity")); break;
+        case PF::UINT16:  fill(sensor_msgs::PointCloud2ConstIterator<uint16_t>(*pc, "reflectivity")); break;
+        case PF::UINT32:  fill(sensor_msgs::PointCloud2ConstIterator<uint32_t>(*pc, "reflectivity")); break;
+        case PF::FLOAT32: fill(sensor_msgs::PointCloud2ConstIterator<float   >(*pc, "reflectivity")); break;
+        default:
+          RCLCPP_WARN_ONCE(this->get_logger(),
+              "reflectivity field has unsupported datatype %u; channel will be zero.",
+              rfield->datatype);
+          break;
+      }
+    } else {
+      RCLCPP_WARN_ONCE(this->get_logger(),
+          "photometricChannel=reflectivity but the cloud has no 'reflectivity' field.");
+    }
+  }
+
+  // Radiometric intensity correction (raw-intensity photometric path only):
+  // range falloff and, optionally, incidence angle (Kashani et al.). Applied
+  // BEFORE NaN removal so the organized grid is available for cheap per-point
+  // normals. Skipped for reflectivity (sensor-calibrated) and when the
+  // photometric term is off, so downstream consumers of the deskewed cloud
+  // and keyframes only see modified intensities when the feature is in use.
+  if (this->photometric_active_ && !this->use_reflectivity_ && this->intensity_r_ref_ > 0.0) {
+    const float alpha   = static_cast<float>(this->intensity_alpha_);
+    const float r_ref   = static_cast<float>(this->intensity_r_ref_);
+    const float cos_min = static_cast<float>(this->intensity_cos_min_);
+    const bool organized = (original_scan_->height > 1 && original_scan_->width > 1);
+    const bool do_incidence = this->intensity_incidence_ && organized;
+
+    if (do_incidence) {
+      const int W = static_cast<int>(original_scan_->width);
+      const int H = static_cast<int>(original_scan_->height);
+      for (int row = 0; row < H; ++row) {
+        for (int col = 0; col < W; ++col) {
+          auto& pt = original_scan_->at(col, row);
+          const float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+          if (!(r > 0.f)) { continue; }
+          // Surface normal from organized neighbors (right & down); falls back
+          // to range-only (cos=1) at borders / where a neighbor is invalid.
+          float cos_a = 1.0f;
+          if (col + 1 < W && row + 1 < H) {
+            const auto& pr = original_scan_->at(col + 1, row);
+            const auto& pd = original_scan_->at(col, row + 1);
+            if (std::isfinite(pr.x) && std::isfinite(pd.x)) {
+              const Eigen::Vector3f c(pt.x, pt.y, pt.z);
+              Eigen::Vector3f n = (Eigen::Vector3f(pr.x, pr.y, pr.z) - c)
+                                  .cross(Eigen::Vector3f(pd.x, pd.y, pd.z) - c);
+              const float nn = n.norm();
+              if (nn > 1e-6f) { cos_a = std::abs((c / r).dot(n / nn)); }
+            }
+          }
+          pt.intensity = correctIntensity(pt.intensity, r, cos_a, alpha, r_ref, cos_min);
+        }
+      }
+    } else {
+      for (auto& pt : original_scan_->points) {
+        const float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
+        pt.intensity = correctIntensity(pt.intensity, r, 1.0f, alpha, r_ref, cos_min);
+      }
+    }
+  }
 
   // Remove NaNs
   std::vector<int> idx;
@@ -520,10 +696,12 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
     } else if (field.name == "time") {
       this->sensor = dlio::SensorType::VELODYNE;
       break;
-    } else if (field.name == "timestamp" && original_scan_->points[0].timestamp < 1e14) {
+    } else if (field.name == "timestamp" && !original_scan_->points.empty()
+               && original_scan_->points[0].timestamp < 1e14) {
       this->sensor = dlio::SensorType::HESAI;
       break;
-    } else if (field.name == "timestamp" && original_scan_->points[0].timestamp > 1e14) {
+    } else if (field.name == "timestamp" && !original_scan_->points.empty()
+               && original_scan_->points[0].timestamp > 1e14) {
       this->sensor = dlio::SensorType::LIVOX;
       break;
     }
@@ -590,6 +768,36 @@ void dlio::OdomNode::preprocessPoints() {
     pcl::PointCloud<PointType>::Ptr current_scan_ = std::make_shared<pcl::PointCloud<PointType>>(*this->deskewed_scan);
     this->voxel.setInputCloud(current_scan_);
     this->voxel.filter(*current_scan_);
+
+    // Re-attach the photometric channels VoxelGrid dropped: average each input
+    // point's reflectivity/intensity into the output voxel it fell into, using
+    // the saved leaf layout (O(N), no extra kd-tree). Without this the submap's
+    // channel is all-zero and every photometric gradient is rejected. Only the
+    // photometric GICP term reads these channels, so skip the transfer
+    // entirely in the default geometry-only path.
+    // Both channels are averaged regardless of which one is in use: the absent
+    // one is simply zero in -> zero out (the active channel is the one the term
+    // reads via use_reflectivity_), so single-channel sensors
+    // (intensity-only or reflectivity-only) are handled correctly.
+    const size_t M = current_scan_->size();
+    if (M > 0 && this->photometric_active_) {
+      std::vector<float> refl_sum(M, 0.f), int_sum(M, 0.f);
+      std::vector<int> cnt(M, 0);
+      for (const auto& p : this->deskewed_scan->points) {
+        const int idx = this->voxel.getCentroidIndex(p);
+        if (idx >= 0 && static_cast<size_t>(idx) < M) {
+          refl_sum[idx] += p.reflectivity;
+          int_sum[idx]  += p.intensity;
+          ++cnt[idx];
+        }
+      }
+      for (size_t i = 0; i < M; ++i) {
+        if (cnt[i] > 0) {
+          current_scan_->points[i].reflectivity = refl_sum[i] / cnt[i];
+          current_scan_->points[i].intensity    = int_sum[i]  / cnt[i];
+        }
+      }
+    }
     this->current_scan = current_scan_;
   } else {
     this->current_scan = this->deskewed_scan;
@@ -599,8 +807,9 @@ void dlio::OdomNode::preprocessPoints() {
 
 void dlio::OdomNode::deskewPointcloud() {
 
-  pcl::PointCloud<PointType>::Ptr deskewed_scan_ = std::make_shared<pcl::PointCloud<PointType>>(1, this->original_scan->points.size());
-  // deskewed_scan_->points.resize(this->original_scan->points.size());
+  // pcl::PointCloud(width, height): N points wide, 1 row tall (unorganized)
+  pcl::PointCloud<PointType>::Ptr deskewed_scan_ =
+      std::make_shared<pcl::PointCloud<PointType>>(this->original_scan->points.size(), 1);
   // individual point timestamps should be relative to this time
   double sweep_ref_time = rclcpp::Time(this->scan_header_stamp).seconds();
 
@@ -769,7 +978,9 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   this->main_loop_running = true;
   lock.unlock();
 
-  double then = this->now().seconds();
+  // Wall-clock start of this callback's computation. steady_clock (not this->now(),
+  // which follows sim time) so comp_times reflects real processing cost under replay.
+  auto cb_start = std::chrono::steady_clock::now();
 
   if (this->first_scan_stamp == 0.) {
     this->first_scan_stamp = rclcpp::Time(pc->header.stamp).seconds();
@@ -796,8 +1007,8 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   }
 
   // Compute Metrics
+  if (this->metrics_thread.joinable()) this->metrics_thread.join();
   this->metrics_thread = std::thread( &dlio::OdomNode::computeMetrics, this );
-  this->metrics_thread.detach();
 
   // Set Adaptive Parameters
   if (this->adaptive_params_) {
@@ -836,10 +1047,15 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   }
 
   // Update trajectory
+  this->trajectory_mtx.lock();
   this->trajectory.push_back( std::make_pair(this->state.p, this->state.q) );
+  this->trajectory_mtx.unlock();
 
   // Update time stamps
-  this->lidar_rates.push_back( 1. / (this->scan_stamp - this->prev_scan_stamp) );
+  {
+    std::lock_guard<std::mutex> lock(this->stats_mtx);
+    this->lidar_rates.push_back( 1. / (this->scan_stamp - this->prev_scan_stamp) );
+  }
   this->prev_scan_stamp = this->scan_stamp;
   this->elapsed_time = this->scan_stamp - this->first_scan_stamp;
 
@@ -850,16 +1066,20 @@ void dlio::OdomNode::callbackPointCloud(const sensor_msgs::msg::PointCloud2::Sha
   } else {
     published_cloud = this->deskewed_scan;
   }
+  if (this->publish_thread.joinable()) this->publish_thread.join();
   this->publish_thread = std::thread( &dlio::OdomNode::publishToROS, this, published_cloud, this->T_corr );
-  this->publish_thread.detach();
 
   // Update some statistics
-  this->comp_times.push_back(this->now().seconds() - then);
+  double comp_time = std::chrono::duration<double>(std::chrono::steady_clock::now() - cb_start).count();
+  {
+    std::lock_guard<std::mutex> lock(this->stats_mtx);
+    this->comp_times.push_back(comp_time);
+  }
   this->gicp_hasConverged = this->gicp.hasConverged();
 
   // Debug statements and publish custom DLIO message
+  if (this->debug_thread.joinable()) this->debug_thread.join();
   this->debug_thread = std::thread( &dlio::OdomNode::debug, this );
-  this->debug_thread.detach();
 
   this->geo.first_opt_done = true;
 
@@ -981,7 +1201,10 @@ void dlio::OdomNode::callbackImu(const sensor_msgs::msg::Imu::SharedPtr imu_raw)
 
     double dt = imu_stamp_secs - this->prev_imu_stamp;
     if (dt == 0) { dt = 1.0/200.0; }
-    this->imu_rates.push_back( 1./dt );
+    {
+      std::lock_guard<std::mutex> lock(this->stats_mtx);
+      this->imu_rates.push_back( 1./dt );
+    }
 
     // Apply the calibrated bias to the new IMU measurements
     this->imu_meas.stamp = imu_stamp_secs;
@@ -1056,7 +1279,13 @@ bool dlio::OdomNode::imuMeasFromTimeRange(double start_time, double end_time,
   if (this->imu_buffer.empty() || this->imu_buffer.front().stamp < end_time) {
     // Wait for the latest IMU data
     std::unique_lock<decltype(this->mtx_imu)> lock(this->mtx_imu);
-    this->cv_imu_stamp.wait(lock, [this, &end_time]{ return this->imu_buffer.front().stamp >= end_time; });
+    this->cv_imu_stamp.wait_for(lock, std::chrono::milliseconds(100), [this, &end_time]{ return !this->imu_buffer.empty() && this->imu_buffer.front().stamp >= end_time; });
+  }
+
+  // wait_for may time out with the buffer still empty; iterating it below would walk
+  // past end() (UB). Bail out — the caller treats false as "not enough IMU data".
+  if (this->imu_buffer.empty()) {
+    return false;
   }
 
   auto imu_it = this->imu_buffer.begin();
@@ -1433,7 +1662,7 @@ void dlio::OdomNode::computeSpaciousness() {
   // compute range of points
   std::vector<float> ds;
 
-  for (int i = 0; i <= this->original_scan->points.size(); i++) {
+  for (int i = 0; i < this->original_scan->points.size(); i++) {
     float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
                         pow(this->original_scan->points[i].y, 2));
     ds.push_back(d);
@@ -1447,6 +1676,7 @@ void dlio::OdomNode::computeSpaciousness() {
   median_prev = median_lpf;
 
   // push
+  std::lock_guard<std::mutex> lock(this->metrics_mtx);
   this->metrics.spaciousness.push_back( median_lpf );
 
 }
@@ -1465,6 +1695,7 @@ void dlio::OdomNode::computeDensity() {
   float density_lpf = 0.95*density_prev + 0.05*density;
   density_prev = density_lpf;
 
+  std::lock_guard<std::mutex> lock(this->metrics_mtx);
   this->metrics.density.push_back( density_lpf );
 
 }
@@ -1632,7 +1863,9 @@ void dlio::OdomNode::updateKeyframes() {
 void dlio::OdomNode::setAdaptiveParams() {
 
   // Spaciousness
+  this->metrics_mtx.lock();
   float sp = this->metrics.spaciousness.back();
+  this->metrics_mtx.unlock();
 
   if (sp < 0.5) { sp = 0.5; }
   if (sp > 5.0) { sp = 5.0; }
@@ -1640,7 +1873,9 @@ void dlio::OdomNode::setAdaptiveParams() {
   this->keyframe_thresh_dist_ = sp;
 
   // Density
+  this->metrics_mtx.lock();
   float den = this->metrics.density.back();
+  this->metrics_mtx.unlock();
 
   if (den < 0.5*this->gicp_max_corr_dist_) { den = 0.5*this->gicp_max_corr_dist_; }
   if (den > 2.0*this->gicp_max_corr_dist_) { den = 2.0*this->gicp_max_corr_dist_; }
@@ -1801,8 +2036,8 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
     this->keyframes[i].second = transformed_keyframe;
     this->keyframe_normals[i] = transformed_covariances;
 
+    if (this->publish_keyframe_thread.joinable()) this->publish_keyframe_thread.join();
     this->publish_keyframe_thread = std::thread( &dlio::OdomNode::publishKeyframe, this, this->keyframes[i], this->keyframe_timestamps[i] );
-    this->publish_keyframe_thread.detach();
   }
 
   lock.unlock();
@@ -1824,6 +2059,7 @@ void dlio::OdomNode::debug() {
   double length_traversed = 0.;
   Eigen::Vector3f p_curr = Eigen::Vector3f(0., 0., 0.);
   Eigen::Vector3f p_prev = Eigen::Vector3f(0., 0., 0.);
+  this->trajectory_mtx.lock();
   for (const auto& t : this->trajectory) {
     if (p_prev == Eigen::Vector3f(0., 0., 0.)) {
       p_prev = t.first;
@@ -1837,29 +2073,44 @@ void dlio::OdomNode::debug() {
       p_prev = p_curr;
     }
   }
+  this->trajectory_mtx.unlock();
   this->length_traversed = length_traversed;
 
-  // Average computation time
-  double avg_comp_time =
-    std::accumulate(this->comp_times.begin(), this->comp_times.end(), 0.0) / this->comp_times.size();
-
-  // Average sensor rates
+  // Snapshot all comp_times / imu_rates / lidar_rates derived values under stats_mtx:
+  // these vectors are mutated on the lidar+imu callbacks while this runs on the debug
+  // thread, so every read (incl. .back()/max_element in the print block below) must be
+  // taken here rather than touched inline.
   int win_size = 100;
-  double avg_imu_rate;
-  double avg_lidar_rate;
-  if (this->imu_rates.size() < win_size) {
-    avg_imu_rate =
-      std::accumulate(this->imu_rates.begin(), this->imu_rates.end(), 0.0) / this->imu_rates.size();
-  } else {
-    avg_imu_rate =
-      std::accumulate(this->imu_rates.end()-win_size, this->imu_rates.end(), 0.0) / win_size;
-  }
-  if (this->lidar_rates.size() < win_size) {
-    avg_lidar_rate =
-      std::accumulate(this->lidar_rates.begin(), this->lidar_rates.end(), 0.0) / this->lidar_rates.size();
-  } else {
-    avg_lidar_rate =
-      std::accumulate(this->lidar_rates.end()-win_size, this->lidar_rates.end(), 0.0) / win_size;
+  double avg_comp_time = 0., last_comp_time = 0., max_comp_time = 0.;
+  double avg_imu_rate = 0., avg_lidar_rate = 0.;
+  {
+    std::lock_guard<std::mutex> lock(this->stats_mtx);
+
+    if (!this->comp_times.empty()) {
+      avg_comp_time =
+        std::accumulate(this->comp_times.begin(), this->comp_times.end(), 0.0) / this->comp_times.size();
+      last_comp_time = this->comp_times.back();
+      max_comp_time = *std::max_element(this->comp_times.begin(), this->comp_times.end());
+    }
+
+    if (!this->imu_rates.empty()) {
+      if (this->imu_rates.size() < static_cast<size_t>(win_size)) {
+        avg_imu_rate =
+          std::accumulate(this->imu_rates.begin(), this->imu_rates.end(), 0.0) / this->imu_rates.size();
+      } else {
+        avg_imu_rate =
+          std::accumulate(this->imu_rates.end()-win_size, this->imu_rates.end(), 0.0) / win_size;
+      }
+    }
+    if (!this->lidar_rates.empty()) {
+      if (this->lidar_rates.size() < static_cast<size_t>(win_size)) {
+        avg_lidar_rate =
+          std::accumulate(this->lidar_rates.begin(), this->lidar_rates.end(), 0.0) / this->lidar_rates.size();
+      } else {
+        avg_lidar_rate =
+          std::accumulate(this->lidar_rates.end()-win_size, this->lidar_rates.end(), 0.0) / win_size;
+      }
+    }
   }
 
   // RAM Usage
@@ -2004,9 +2255,9 @@ void dlio::OdomNode::debug() {
 
   std::cout << std::right << std::setprecision(2) << std::fixed;
   std::cout << "| Computation Time :: "
-    << std::setfill(' ') << std::setw(6) << this->comp_times.back()*1000. << " ms    // Avg: "
+    << std::setfill(' ') << std::setw(6) << last_comp_time*1000. << " ms    // Avg: "
     << std::setw(6) << avg_comp_time*1000. << " / Max: "
-    << std::setw(6) << *std::max_element(this->comp_times.begin(), this->comp_times.end())*1000.
+    << std::setw(6) << max_comp_time*1000.
     << "     |" << std::endl;
   std::cout << "| Cores Utilized   :: "
     << std::setfill(' ') << std::setw(6) << (cpu_percent/100.) * this->numProcessors << " cores // Avg: "

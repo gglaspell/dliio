@@ -1,5 +1,7 @@
 #include "nano_gicp/nano_gicp.h"
 #include "dlio/dlio.h"
+#include <cmath>
+#include <numeric>
 #include <omp.h>
 #include <Eigen/Dense>
 #include <pcl/common/transforms.h>
@@ -34,6 +36,9 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
   this->lambda_factor_ = 1e-9;
   this->photometric_weight_ = 0.0f;
   this->gradient_k_neighbors_ = 10;
+  this->photometric_use_reflectivity_ = false;
+  this->photometric_scale_ = 255.0f;
+  this->photometric_huber_delta_ = 0.05f;
   this->intensity_gradient_threshold_ = 1e-6;
 }
 
@@ -81,6 +86,21 @@ void NanoGICP<PointSource, PointTarget>::setGradientKNeighbors(int k) {
 }
 
 template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setPhotometricChannel(bool use_reflectivity) {
+    this->photometric_use_reflectivity_ = use_reflectivity;
+}
+
+template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setPhotometricScale(float scale) {
+    this->photometric_scale_ = (scale > 0.f) ? scale : 1.0f;
+}
+
+template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setPhotometricHuberDelta(float delta) {
+    this->photometric_huber_delta_ = delta;
+}
+
+template <typename PointSource, typename PointTarget>
 const CovarianceList& NanoGICP<PointSource, PointTarget>::getSourceCovariances() const {
     return source_covs_;
 }
@@ -96,8 +116,8 @@ void NanoGICP<PointSource, PointTarget>::setInputSource(const PointCloudSourceCo
   
   input_kdtree_.reset(new nanoflann::KdTreeFLANN<PointSource>(false));
   input_kdtree_->setInputCloud(cloud);
-  
-  calculate_covariances(cloud, *input_kdtree_, source_covs_);
+
+  calculate_covariances(cloud, *input_kdtree_, source_covs_, &source_density_);
 }
 
 template <typename PointSource, typename PointTarget>
@@ -158,30 +178,47 @@ bool NanoGICP<PointSource, PointTarget>::estimate_spatial_intensity_gradient(
     return false;
   }
   
+  // Read whichever channel (intensity or reflectivity) is selected, normalized
+  // by photometric_scale_ so gradients/residuals are dimensionless and
+  // photometricWeight transfers across sensors (0-255 intensity, uint16
+  // reflectivity, float channels...).
+  const bool use_refl = this->photometric_use_reflectivity_;
+  const float inv_scale = 1.0f / this->photometric_scale_;
+  auto chan = [use_refl, inv_scale](const PointTarget& p) {
+    return (use_refl ? p.reflectivity : p.intensity) * inv_scale;
+  };
+
   Eigen::MatrixXf A(found_neighbors, 4);
   Eigen::VectorXf i(found_neighbors);
-  
+
+  // Solve in coordinates centered on the query point: the gradient is
+  // translation-invariant, but with absolute world coordinates cond(AtA)
+  // grows ~ ||x||^4, so the condition-number rejection below would fire
+  // based on distance from the map origin rather than surface geometry
+  // (the photometric term would silently fade out as the map grows).
+  const auto& query_pt = this->target_->at(target_index);
+
   float mean_intensity = 0.0f;
   for (int j = 0; j < found_neighbors; ++j) {
     const auto& pt = this->target_->at(nn_indices[j]);
-    A(j, 0) = pt.x;
-    A(j, 1) = pt.y;
-    A(j, 2) = pt.z;
+    A(j, 0) = pt.x - query_pt.x;
+    A(j, 1) = pt.y - query_pt.y;
+    A(j, 2) = pt.z - query_pt.z;
     A(j, 3) = 1.0f;
-    i(j) = pt.intensity;
-    mean_intensity += pt.intensity;
+    i(j) = chan(pt);
+    mean_intensity += chan(pt);
   }
   mean_intensity /= found_neighbors;
-  
-  // Calculate intensity variance for validation
+
+  // Calculate channel variance for validation
   float intensity_variance = 0.0f;
   for (int j = 0; j < found_neighbors; ++j) {
-      float diff = this->target_->at(nn_indices[j]).intensity - mean_intensity;
+      float diff = chan(this->target_->at(nn_indices[j])) - mean_intensity;
       intensity_variance += diff * diff;
   }
   intensity_variance /= found_neighbors;
-  
-  // Reject if intensity is too uniform
+
+  // Reject if the channel is too uniform
   if (intensity_variance < intensity_gradient_threshold_) {
       return false;
   }
@@ -220,7 +257,9 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(
     
     Eigen::Isometry3f trans = Eigen::Isometry3f::Identity();
     trans.matrix() = guess;
-    
+
+    this->converged_ = false;
+
     for (int i = 0; i < this->max_iterations_; ++i) {
         update_correspondences(trans);
         
@@ -245,9 +284,11 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(
         trans.prerotate(Eigen::AngleAxisf(dx[0], Eigen::Vector3f::UnitX()));
         trans.pretranslate(dx.tail<3>());
 
-        // Check convergence
-        if (dx.head<3>().norm() < transformation_epsilon_ && 
+        // Check convergence: rotation step (dx.head) vs rotation_epsilon_,
+        // translation step (dx.tail) vs transformation_epsilon_.
+        if (dx.head<3>().norm() < rotation_epsilon_ &&
             dx.tail<3>().norm() < transformation_epsilon_) {
+            this->converged_ = true;
             break;
         }
     }
@@ -330,17 +371,32 @@ void NanoGICP<PointSource, PointTarget>::linearize(
         H_private[thread_num] += J_geometric.transpose() * M * J_geometric;
         b_private[thread_num] += J_geometric.transpose() * M * residual;
         
-        // Photometric term
+        // Photometric term (channel normalized by photometric_scale_ to match
+        // the units the target gradients were estimated in)
         if (use_photometric && gradient_valid_[target_index]) {
-            float intensity_diff = source_pt.intensity - target_pt.intensity;
+            float src_val = photometric_use_reflectivity_ ? source_pt.reflectivity : source_pt.intensity;
+            float tgt_val = photometric_use_reflectivity_ ? target_pt.reflectivity : target_pt.intensity;
+            float intensity_diff = (src_val - tgt_val) / photometric_scale_;
             Eigen::Vector3f gradient = target_intensity_gradients_[target_index];
             
             if (gradient.norm() > 1e-6 && gradient.norm() < 100.0f) {
+                // Residual is (I_src - I_tgt); its Jacobian w.r.t. the (left-perturbation)
+                // pose is d/dθ (I_src - I_tgt(x)) = -gᵀ·dx/dθ = [ gᵀ·skew(x) | -gᵀ ].
+                // (Must match the geometric term's convention or the photometric step
+                //  ascends intensity error instead of descending it.)
                 Eigen::Matrix<float, 1, 6> J_photometric;
-                J_photometric.block<1, 3>(0, 0) = -gradient.transpose() * skew(transformed_source);
-                J_photometric.block<1, 3>(0, 3) = gradient.transpose();
+                J_photometric.block<1, 3>(0, 0) = gradient.transpose() * skew(transformed_source);
+                J_photometric.block<1, 3>(0, 3) = -gradient.transpose();
                 
+                // Huber robustification: photometric outliers (specular
+                // returns, wet patches, exposure-like artifacts) otherwise
+                // shove the pose at full weight -- IRLS down-weighting
+                // beyond photometric_huber_delta_ (normalized units).
                 float weight = photometric_weight_;
+                const float abs_r = std::abs(intensity_diff);
+                if (photometric_huber_delta_ > 0.f && abs_r > photometric_huber_delta_) {
+                    weight *= photometric_huber_delta_ / abs_r;
+                }
                 H_private[thread_num] += weight * J_photometric.transpose() * J_photometric;
                 b_private[thread_num] += weight * J_photometric.transpose() * intensity_diff;
             }
@@ -358,17 +414,26 @@ template <typename PointT>
 void NanoGICP<PointSource, PointTarget>::calculate_covariances(
     const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
     nanoflann::KdTreeFLANN<PointT>& kdtree,
-    CovarianceList& covs) {
-    
+    CovarianceList& covs,
+    float* density) {
+
     covs.resize(cloud->size());
-    
-    #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8)
+    float sum_k_sq_distances = 0.0f;
+
+    #pragma omp parallel for num_threads(num_threads_) schedule(guided, 8) \
+        reduction(+:sum_k_sq_distances)
     for(int i = 0; i < cloud->size(); ++i) {
         std::vector<int> k_indices(k_correspondences_);
         std::vector<float> k_sq_distances(k_correspondences_);
-        
+
         kdtree.nearestKSearch(cloud->at(i), k_correspondences_, k_indices, k_sq_distances);
-        
+
+        // accumulate normalized neighborhood spread for the density metric
+        // (skip k_sq_distances[0], the query point itself)
+        const int normalization = ((k_correspondences_ - 1) * (2 + k_correspondences_)) / 2;
+        sum_k_sq_distances +=
+            std::accumulate(k_sq_distances.begin() + 1, k_sq_distances.end(), 0.0f) / normalization;
+
         Eigen::Matrix<float, 4, -1> neighbors(4, k_correspondences_);
         for(int j = 0; j < k_indices.size(); ++j) {
             neighbors.col(j) = cloud->at(k_indices[j]).getVector4fMap();
@@ -392,6 +457,10 @@ void NanoGICP<PointSource, PointTarget>::calculate_covariances(
         }
         
         covs[i] = cov;
+    }
+
+    if (density != nullptr && !cloud->empty()) {
+        *density = sum_k_sq_distances / cloud->size();
     }
 }
 

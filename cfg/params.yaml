@@ -49,8 +49,40 @@
     odom/gicp/initLambdaFactor: 1e-9
 
     odom/gicp/photometricWeight: 0.1
+    # Full-scale of the photometric channel; the channel is divided by this so
+    # photometricWeight is sensor-independent. 255 covers 8-bit intensity and
+    # 8-bit Ouster calibrated reflectivity; use 65535 for raw 16-bit channels.
+    odom/gicp/photometricScale: 255.0
+    # Huber threshold on the normalized photometric residual: residuals beyond
+    # this are downweighted (robust to specular/wet-surface outliers).
+    # 0.05 = ~13 intensity counts at photometricScale 255. <= 0 disables.
+    odom/gicp/photometricHuberDelta: 0.05
+
+    # Photometric channel for the GICP intensity term:
+    #   intensity    - raw return strength (range-dependent); uses the range
+    #                  correction below.
+    #   reflectivity - calibrated reflectivity (e.g. Ouster), already range-
+    #                  normalized; the range correction is skipped automatically.
+    # If the chosen field is absent from the cloud, the node falls back to the
+    # other channel automatically (logged once); the photometric term is disabled
+    # only if neither field is present.
+    odom/gicp/photometricChannel: intensity
+
+    # Intensity range correction (only applied when photometricChannel: intensity)
+    # intensityAlpha : falloff exponent (2.0 = inverse-square; tune per sensor)
+    # intensityRRef  : reference range in metres (anchor; 1.0 is a safe default)
+    odom/preprocessing/intensityAlpha: 2.0
+    odom/preprocessing/intensityRRef: 1.0
+    # Incidence-angle correction (Kashani radiometric model): additionally divide
+    # intensity by max(|beam . surface_normal|, cosMin). Corrects the grazing-angle
+    # darkening of distant ground/wall points that the range model alone leaves
+    # (and which otherwise looks like spurious intensity gradients). Organized
+    # scans only (uses the native grid for cheap normals); off by default.
+    # cosMin floors the divisor to avoid blow-up at grazing angles (0.2 ~= 78 deg).
+    odom/preprocessing/intensityIncidence: false
+    odom/preprocessing/intensityCosMin: 0.2
     odom/gicp/gradientKNeighbors: 10
-    
+
     odom/geo/Kp: 4.5
     odom/geo/Kv: 11.25
     odom/geo/Kq: 4.0

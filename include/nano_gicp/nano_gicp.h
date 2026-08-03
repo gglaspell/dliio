@@ -48,6 +48,16 @@ public:
 
   void setPhotometricWeight(float weight);
   void setGradientKNeighbors(int k);
+  // Selects which point field feeds the photometric term:
+  // false = intensity (default), true = reflectivity.
+  void setPhotometricChannel(bool use_reflectivity);
+  // Full-scale value of the photometric channel (default 255). The channel is
+  // divided by this before gradient estimation and residuals, so
+  // photometricWeight is in normalized units and transfers across sensors.
+  void setPhotometricScale(float scale);
+  // Huber threshold on the (normalized) photometric residual; residuals
+  // beyond it are IRLS-downweighted. <= 0 disables robustification.
+  void setPhotometricHuberDelta(float delta);
 
   virtual void setInputSource(const PointCloudSourceConstPtr& cloud) override;
   virtual void setInputTarget(const PointCloudTargetConstPtr& cloud) override;
@@ -61,9 +71,10 @@ protected:
   void update_correspondences(const Eigen::Isometry3f& trans);
 
   template<typename PointT>
-  void calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, 
-                             nanoflann::KdTreeFLANN<PointT>& kdtree, 
-                             CovarianceList& covariances);
+  void calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
+                             nanoflann::KdTreeFLANN<PointT>& kdtree,
+                             CovarianceList& covariances,
+                             float* density = nullptr);
 
   bool estimate_spatial_intensity_gradient(int target_index, Eigen::Vector3f& gradient) const;
   void calculate_target_intensity_gradients();
@@ -73,6 +84,7 @@ protected:
   using pcl::Registration<PointSource, PointTarget>::input_;
   using pcl::Registration<PointSource, PointTarget>::target_;
   using pcl::Registration<PointSource, PointTarget>::corr_dist_threshold_;
+  using pcl::Registration<PointSource, PointTarget>::converged_;
   using pcl::Registration<PointSource, PointTarget>::final_transformation_;
   using pcl::Registration<PointSource, PointTarget>::max_iterations_;
   using pcl::Registration<PointSource, PointTarget>::transformation_epsilon_;
@@ -97,6 +109,9 @@ protected:
 
   float photometric_weight_;
   int gradient_k_neighbors_;
+  bool photometric_use_reflectivity_;  // false = intensity, true = reflectivity
+  float photometric_scale_;            // channel full-scale; channel is divided by this
+  float photometric_huber_delta_;      // Huber threshold (normalized units); <=0 disables
   
   std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> target_intensity_gradients_;
   std::vector<bool> gradient_valid_;

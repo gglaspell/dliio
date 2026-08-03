@@ -8,6 +8,22 @@ Added `photometricWeight` (default value: 0.1) and `gradientKNeighbors` (default
 
 These new user-configurable parameters allow you to control the influence of the intensity information. In featureless enviroments a higher `photometricWeight` is preferred.
 
+Added `intensityAlpha` (default value: 2.0) and `intensityRRef` (default value: 1.0) to cfg/params.yaml.
+
+These new user-configurable parameters allow you to control the influence the range coorection. Specifically, `intensityAlpha` is the falloff exponent and `intensityRRef` is the reference range in metres.
+
+Added `photometricChannel` (default value: `intensity`) to cfg/params.yaml.
+
+Selects which point field feeds the photometric term: `intensity` (raw return strength, range-corrected as above) or `reflectivity` (sensor-calibrated, e.g. Ouster; the range correction is skipped since the sensor already normalizes it). If the chosen field is absent from the cloud the node falls back to the other one automatically (logged once), and disables the term only if neither is present.
+
+Added `photometricScale` (default value: 255.0) to cfg/params.yaml.
+
+Full-scale of the photometric channel; the channel is divided by this so `photometricWeight` means the same thing across sensors. Use 65535 for raw 16-bit channels.
+
+Added `intensityIncidence` (default value: false) and `intensityCosMin` (default value: 0.2) to cfg/params.yaml.
+
+Opt-in incidence-angle correction on top of the range correction (Kashani et al. radiometric model): intensity is additionally divided by `max(cos(incidence), intensityCosMin)`, correcting the grazing-angle darkening of distant ground/wall points. Needs an organized (row/column) scan, e.g. Ouster; `intensityAlpha`/`intensityRRef` still apply.
+
 ---
 
 # Original ReadMe

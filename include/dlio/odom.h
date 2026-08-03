@@ -47,6 +47,24 @@ public:
 
   void start();
 
+  // Radiometric intensity correction (range + optional incidence angle), the
+  // Kashani et al. model  I' = I * (r/r_ref)^alpha / max(cos_incidence, cos_min)
+  // clamped to [0,255]. cos_incidence = |beam . surface_normal| in [0,1]
+  // (1 = normal incidence; pass 1 to apply range-only). Static and
+  // side-effect-free for unit testing.
+  static float correctIntensity(float intensity, float range, float cos_incidence,
+                                 float alpha, float r_ref, float cos_min);
+
+
+  // Intensity<->reflectivity fallback: resolve the configured photometric channel
+  // against the fields the cloud actually carries. In/out: use_reflectivity and
+  // photometric_active are updated to the effective values -- reflectivity falls
+  // back to intensity (and vice versa) when its field is absent, or the term is
+  // disabled if neither field is present. No-op when the term is off or the
+  // requested channel is available. Static + side-effect-free for unit testing.
+  static void resolvePhotometricChannel(bool has_reflectivity, bool has_intensity,
+                                        bool& use_reflectivity, bool& photometric_active);
+
 private:
 
   struct State;
@@ -150,6 +168,7 @@ private:
 
   // Trajectory
   std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
+  std::mutex trajectory_mtx;
   double length_traversed;
 
   // Keyframes
@@ -209,6 +228,8 @@ private:
   std::vector<double> comp_times;
   std::vector<double> imu_rates;
   std::vector<double> lidar_rates;
+  std::mutex stats_mtx;   // guards comp_times / imu_rates / lidar_rates (written on the
+                          // lidar+imu callbacks, read on the debug thread)
 
   double first_scan_stamp;
   double elapsed_time;
@@ -301,6 +322,7 @@ private:
     std::vector<float> spaciousness;
     std::vector<float> density;
   }; Metrics metrics;
+  std::mutex metrics_mtx;
 
   std::string cpu_type;
   std::vector<double> cpu_percents;
@@ -362,5 +384,20 @@ private:
   double geo_Kgb_;
   double geo_abias_max_;
   double geo_gbias_max_;
+  // Intensity range correction
+  double intensity_alpha_;
+  double intensity_r_ref_;
+  // Incidence-angle correction (organized scans only): divide by
+  // max(|beam.normal|, cos_min). Off by default.
+  bool intensity_incidence_;
+  double intensity_cos_min_;
+  // Photometric channel: false = intensity, true = reflectivity
+  bool use_reflectivity_;
+  // photometric term enabled (weight > 0); the fallback resolution below may
+  // clear it if the cloud carries neither channel field
+  bool photometric_active_;
+  // One-time intensity<->reflectivity fallback resolution against the actual
+  // cloud fields (set on the first scan; see getScanFromROS).
+  bool channel_resolved_ = false;
 
 };

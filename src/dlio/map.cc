@@ -27,7 +27,7 @@ dlio::MapNode::MapNode(): Node("dlio_map_node") {
 
   this->save_pcd_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   this->save_pcd_srv = this->create_service<direct_lidar_inertial_odometry::srv::SavePCD>("save_pcd",
-      std::bind(&dlio::MapNode::savePCD, this, std::placeholders::_1, std::placeholders::_2), rmw_qos_profile_services_default, this->save_pcd_cb_group);
+      std::bind(&dlio::MapNode::savePCD, this, std::placeholders::_1, std::placeholders::_2), rclcpp::ServicesQoS(), this->save_pcd_cb_group);
 
   this->dlio_map = std::make_shared<pcl::PointCloud<PointType>>();
 
@@ -61,21 +61,26 @@ void dlio::MapNode::callbackKeyframe(const sensor_msgs::msg::PointCloud2::ConstS
   this->voxelgrid.filter(*keyframe_pcl);
 
   // save filtered keyframe to map for rviz
+  this->map_mtx.lock();
   *this->dlio_map += *keyframe_pcl;
 
   // publish full map
   if (this->dlio_map->points.size() == this->dlio_map->width * this->dlio_map->height) {
     sensor_msgs::msg::PointCloud2 map_ros;
     pcl::toROSMsg(*this->dlio_map, map_ros);
+    this->map_mtx.unlock();
     map_ros.header.stamp = this->now();
     map_ros.header.frame_id = this->odom_frame;
     this->map_pub->publish(map_ros);
-  } 
+  } else {
+    this->map_mtx.unlock();
+  }
 }
 
 void dlio::MapNode::savePCD(std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Request> req,
                             std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Response> res) {
 
+  std::lock_guard<std::mutex> lock(this->map_mtx);
   pcl::PointCloud<PointType>::Ptr m = std::make_shared<pcl::PointCloud<PointType>>(*this->dlio_map);
 
   float leaf_size = req->leaf_size;

@@ -13,20 +13,24 @@
 cmake_minimum_required(VERSION 3.12.4)
 project(direct_lidar_inertial_odometry)
 
-set(CMAKE_BUILD_TYPE "Release")
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release)
+endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 
-# Find packages first
+# ROS deps are pulled from package.xml via ament_auto: ament_target_dependencies()
+# was removed in ament_cmake 2.8 (lyrical), so ament_auto_add_executable below
+# links each package's modern targets automatically. Non-ROS deps found explicitly.
+find_package(ament_cmake_auto REQUIRED)
+# VTK::jsoncpp (pulled transitively via PCL/pcl_ros) lists JsonCpp::JsonCpp in its
+# link interface but VTK doesn't find_package(jsoncpp) itself — define the imported
+# target first so VTK-targets.cmake resolves it at link time (lyrical/Ubuntu 26.04).
+find_package(jsoncpp REQUIRED)
+ament_auto_find_build_dependencies()
+
 find_package(rosidl_default_generators REQUIRED)
-find_package(ament_cmake REQUIRED)
-find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(nav_msgs REQUIRED)
-find_package(pcl_ros REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io registration kdtree search features surface filters)
 find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
@@ -71,76 +75,58 @@ link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
 
 # NanoFLANN
-add_library(nanoflann STATIC src/nano_gicp/nanoflann.cc)
+ament_auto_add_library(nanoflann STATIC src/nano_gicp/nanoflann.cc)
 target_compile_definitions(nanoflann PRIVATE PCL_NO_PRECOMPILE)
-target_include_directories(nanoflann PUBLIC 
+target_include_directories(nanoflann PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(nanoflann PUBLIC ${PCL_LIBRARIES})
 
 # NanoGICP
-add_library(nano_gicp STATIC 
+ament_auto_add_library(nano_gicp STATIC
   src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
 target_compile_definitions(nano_gicp PRIVATE PCL_NO_PRECOMPILE)
-target_include_directories(nano_gicp PUBLIC 
+target_include_directories(nano_gicp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(nano_gicp PUBLIC 
-  nanoflann 
+target_link_libraries(nano_gicp PUBLIC
+  nanoflann
   ${PCL_LIBRARIES}
   ${OpenMP_LIBS}
 )
 
-# Odometry Node
-add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
+# Odometry Node -- ament_auto links the ROS deps declared in package.xml
+# (rclcpp, tf2_ros, pcl_ros, pcl_conversions, nav_msgs, sensor_msgs, geometry_msgs).
+ament_auto_add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
 target_compile_definitions(dlio_odom_node PRIVATE PCL_NO_PRECOMPILE)
 target_compile_options(dlio_odom_node PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(dlio_odom_node 
+target_link_libraries(dlio_odom_node
   nano_gicp
   Threads::Threads
   ${PCL_LIBRARIES}
 )
-ament_target_dependencies(dlio_odom_node 
-  tf2_ros 
-  pcl_ros 
-  nav_msgs 
-  pcl_conversions 
-  rclcpp 
-  sensor_msgs 
-  geometry_msgs
-)
 
 # Mapping Node
-add_executable(dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
+ament_auto_add_executable(dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
 target_compile_definitions(dlio_map_node PRIVATE PCL_NO_PRECOMPILE)
 target_compile_options(dlio_map_node PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(dlio_map_node 
+target_link_libraries(dlio_map_node
   ${PCL_LIBRARIES}
   ${cpp_typesupport_target}
 )
-ament_target_dependencies(dlio_map_node 
-  tf2_ros 
-  pcl_ros 
-  pcl_conversions 
-  rclcpp
-)
 
-# Export
-ament_export_include_directories(include)
-ament_export_libraries(${PROJECT_NAME} nano_gicp nanoflann)
-ament_export_dependencies(rclcpp std_msgs sensor_msgs geometry_msgs pcl_ros)
-
-# Install
-install(TARGETS dlio_odom_node dlio_map_node
-  DESTINATION lib/${PROJECT_NAME}
-)
-
+# Install non-executable resources (ament_auto installs the executables itself).
 install(DIRECTORY cfg launch
   DESTINATION share/${PROJECT_NAME}
 )
 
-ament_package()
+if(BUILD_TESTING)
+  find_package(ament_lint_auto REQUIRED)
+  ament_lint_auto_find_test_dependencies()
+endif()
+
+ament_auto_package()

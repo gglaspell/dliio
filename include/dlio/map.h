@@ -54,4 +54,5 @@ private:
 
   double leaf_size_;
 
+  std::mutex map_mtx;
 };
