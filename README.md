@@ -1,4 +1,23 @@
-# Direct LiDAR-Inertial Odometry: Lightweight LIO with Continuous-Time Motion Correction
+# Modifications
+
+Lidar intensity aided DLIO. The extra "i" in the name is for intensity.
+
+## New parameters
+
+Added `photometricWeight` (default value: 0.1) and `gradientKNeighbors` (default value: 10) to cfg/params.yaml.
+
+These new user-configurable parameters allow you to control the influence of the intensity information. In featureless enviroments a higher `photometricWeight` is preferred.
+
+Added `intensityAlpha` (default value: 2.0) and `intensityRRef` (default value: 1.0) to cfg/params.yaml.
+
+These new user-configurable parameters allow you to control the influence the range coorection. Specifically, `intensityAlpha` is the falloff exponent and `intensityRRef` is the reference range in metres.
+
+
+---
+
+# Original ReadMe
+
+## Direct LiDAR-Inertial Odometry: Lightweight LIO with Continuous-Time Motion Correction
 
 #### [[ IEEE ICRA ](https://ieeexplore.ieee.org/document/10160508)] [[ arXiv ](https://arxiv.org/abs/2203.03749)] [[ Video ](https://www.youtube.com/watch?v=4-oXjG8ow10)] [[ Presentation ](https://www.youtube.com/watch?v=Hmiw66KZ1tU)]
 

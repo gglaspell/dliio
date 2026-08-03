@@ -73,17 +73,21 @@ private:
   void initializeDLIO();
 
   void getNextPose();
+
+  // FIX: imuMeasFromTimeRange now copies measurements into a vector instead of
+  //      returning raw circular_buffer reverse iterators, eliminating a data race
+  //      where the IMU callback could modify the buffer while iterators were live.
   bool imuMeasFromTimeRange(double start_time, double end_time,
-                            boost::circular_buffer<ImuMeas>::reverse_iterator& begin_imu_it,
-                            boost::circular_buffer<ImuMeas>::reverse_iterator& end_imu_it);
+                            std::vector<ImuMeas>& imu_meas_out);
+
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>>
     integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen::Vector3f p_init, Eigen::Vector3f v_init,
                  const std::vector<double>& sorted_timestamps);
   std::vector<Eigen::Matrix4f, Eigen::aligned_allocator<Eigen::Matrix4f>>
     integrateImuInternal(Eigen::Quaternionf q_init, Eigen::Vector3f p_init, Eigen::Vector3f v_init,
                          const std::vector<double>& sorted_timestamps,
-                         boost::circular_buffer<ImuMeas>::reverse_iterator begin_imu_it,
-                         boost::circular_buffer<ImuMeas>::reverse_iterator end_imu_it);
+                         std::vector<ImuMeas>::iterator begin_imu_it,
+                         std::vector<ImuMeas>::iterator end_imu_it);
   void propagateGICP();
 
   void propagateState();
@@ -99,12 +103,22 @@ private:
   sensor_msgs::msg::Imu::SharedPtr transformImu(const sensor_msgs::msg::Imu::SharedPtr& imu);
 
   void updateKeyframes();
+  void pruneKeyframes();  // FIX: remove most spatially redundant keyframe when count exceeds max_keyframes_
   void computeConvexHull();
   void computeConcaveHull();
   void pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames);
   void buildSubmap(State vehicle_state);
   void buildKeyframesAndSubmap(State vehicle_state);
   void pauseSubmapBuildIfNeeded();
+
+  // FIX: cap_history trims a stats vector to avoid unbounded growth on long runs.
+  //      Erases the oldest half of entries when the vector exceeds max_size.
+  template <typename T>
+  void cap_history(std::vector<T>& v, std::size_t max_size) {
+    if (v.size() > max_size) {
+      v.erase(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(v.size() - max_size / 2));
+    }
+  }
 
   void debug();
 
@@ -257,7 +271,7 @@ private:
 
   // Geometric Observer
   struct Geo {
-    bool first_opt_done;
+    std::atomic<bool> first_opt_done;  // FIX: was plain bool — data race between lidar and IMU threads
     std::mutex mtx;
     double dp;
     double dq_deg;
@@ -347,6 +361,11 @@ private:
   int imu_buffer_size_;
   Eigen::Matrix3f imu_accel_sm_;
 
+  // FIX: imu/normalized — set true when IMU reports linear acceleration in units
+  //      of g instead of m/s².  Values are multiplied by gravity_ on intake.
+  //      Defaults to false (backward compatible with all existing hardware).
+  bool imu_normalized_;
+
   int gicp_min_num_points_;
   int gicp_k_correspondences_;
   double gicp_max_corr_dist_;
@@ -362,5 +381,13 @@ private:
   double geo_Kgb_;
   double geo_abias_max_;
   double geo_gbias_max_;
+
+  // Intensity range correction
+  double intensity_alpha_;
+  double intensity_r_ref_;
+
+  // FIX: max_keyframes_ caps the keyframe map size to prevent unbounded memory
+  //      growth on long runs.  0 = disabled (default, backward compatible).
+  int max_keyframes_;
 
 };
