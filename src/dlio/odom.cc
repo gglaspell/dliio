@@ -1064,6 +1064,7 @@ void dlio::OdomNode::getNextPose() {
   if (this->new_submap_is_ready && this->submap_hasChanged) {
 
     // Set the current global submap as the target cloud
+<<<<<<< HEAD
     // this->gicp.registerInputTarget(this->submap_cloud);
     // FIX: avoid feeding an empty submap into the KD-tree builder
     if (this->submap_cloud->points.empty()) {
@@ -1071,7 +1072,9 @@ void dlio::OdomNode::getNextPose() {
     } else {
       this->gicp.setInputTarget(this->submap_cloud);
     }
-
+=======
+    this->gicp.setInputTarget(this->submap_cloud);
+>>>>>>> 2b37d95 (odom cc fixes to getNextPose and computeSpaciousness)
 
     // Set submap kdtree
     // this->gicp.target_kdtree_ = this->submap_kdtree;
@@ -1082,7 +1085,8 @@ void dlio::OdomNode::getNextPose() {
     this->submap_hasChanged = false;
   }
 
-  // Align with current submap with global IMU transformation as initial guess
+  // Align with current submap (or previously set target if submap hasn't changed)
+  // using global IMU transformation as initial guess
   pcl::PointCloud<PointType>::Ptr aligned = std::make_shared<pcl::PointCloud<PointType>>();
   this->gicp.align(*aligned);
 
@@ -1091,7 +1095,7 @@ void dlio::OdomNode::getNextPose() {
   this->T = this->T_corr * this->T_prior;
 
   // Update next global pose
-  // Both source and target clouds are in the global frame now, so tranformation is global
+  // Both source and target clouds are in the global frame now, so transformation is global
   this->propagateGICP();
 
   // Geometric observer update
@@ -1517,9 +1521,13 @@ void dlio::OdomNode::computeSpaciousness() {
   // compute range of points
   std::vector<float> ds;
 
+<<<<<<< HEAD
   for (size_t i = 0; i < this->original_scan->points.size(); i++) {
+=======
+  for (int i = 0; i < this->original_scan->points.size(); i++) {
+>>>>>>> 2b37d95 (odom cc fixes to getNextPose and computeSpaciousness)
     float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
-                        pow(this->original_scan->points[i].y, 2));
+                         pow(this->original_scan->points[i].y, 2));
     ds.push_back(d);
   }
 
