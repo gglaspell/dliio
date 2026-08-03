@@ -38,7 +38,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->gicp.setPhotometricWeight(photometricWeight);
   this->gicp.setGradientKNeighbors(gradientKNeighbors);
-  
+
   this->lidar_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   auto lidar_sub_opt = rclcpp::SubscriptionOptions();
   lidar_sub_opt.callback_group = this->lidar_cb_group;
@@ -60,7 +60,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->br = std::make_shared<tf2_ros::TransformBroadcaster>(*this);
 
-  this->publish_timer = this->create_wall_timer(std::chrono::duration<double>(0.01), 
+  this->publish_timer = this->create_wall_timer(std::chrono::duration<double>(0.01),
       std::bind(&dlio::OdomNode::publishPose, this));
 
   this->T = Eigen::Matrix4f::Identity();
@@ -102,7 +102,7 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   this->first_scan_stamp = 0.;
   this->elapsed_time = 0.;
-  this->length_traversed;
+  this->length_traversed = 0.;
 
   this->convex_hull.setDimension(3);
   this->concave_hull.setDimension(3);
@@ -521,6 +521,16 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   // Crop Box Filter
   this->crop.setInputCloud(original_scan_);
   this->crop.filter(*original_scan_);
+
+  // FIX: guard against empty cloud after crop/NaN removal before indexing points[0]
+  if (original_scan_->points.empty()) {
+    RCLCPP_WARN(this->get_logger(), "Scan is empty after crop/NaN filtering, skipping.");
+    this->sensor = dlio::SensorType::UNKNOWN;
+    this->deskew_ = false;
+    this->scan_header_stamp = pc->header.stamp;
+    this->original_scan = original_scan_;
+    return;
+  }
 
   // automatically detect sensor type
   this->sensor = dlio::SensorType::UNKNOWN;
@@ -1036,7 +1046,12 @@ void dlio::OdomNode::getNextPose() {
 
     // Set the current global submap as the target cloud
     // this->gicp.registerInputTarget(this->submap_cloud);
-    this->gicp.setInputTarget(this->submap_cloud);
+    // FIX: avoid feeding an empty submap into the KD-tree builder
+    if (this->submap_cloud->points.empty()) {
+      RCLCPP_WARN(this->get_logger(), "Submap cloud is empty, skipping GICP target update.");
+    } else {
+      this->gicp.setInputTarget(this->submap_cloud);
+    }
 
 
     // Set submap kdtree
@@ -1073,10 +1088,19 @@ bool dlio::OdomNode::imuMeasFromTimeRange(double start_time, double end_time,
                                           std::vector<ImuMeas>& imu_meas_out) {
 
   if (this->imu_buffer.empty() || this->imu_buffer.front().stamp < end_time) {
-    std::unique_lock<decltype(this->mtx_imu)> lock(this->mtx_imu);
-    this->cv_imu_stamp.wait(lock, [this, &end_time]{
-      return this->imu_buffer.front().stamp >= end_time;
-    });
+    std::unique_lock<decltype(mtx_imu)> lock(this->mtx_imu);
+    // FIX: bounded wait — avoid hanging the LiDAR callback thread forever if the
+    // IMU stream stalls or ends. Timeout chosen generously relative to typical
+    // scan periods; tune if your LiDAR runs slower than 2 Hz.
+    bool ok = this->cv_imu_stamp.wait_for(lock, std::chrono::milliseconds(500),
+     [this, &end_time]{
+        return this->imu_buffer.empty() ? false : this->imu_buffer.front().stamp >= end_time;
+      });
+    if (!ok) {
+      RCLCPP_WARN(this->get_logger(),
+        "Timed out waiting for IMU data to catch up to scan time — IMU stream may have stalled.");
+      return false;
+    }
   }
 
   std::unique_lock<decltype(this->mtx_imu)> lock(this->mtx_imu);
@@ -1133,6 +1157,9 @@ dlio::OdomNode::integrateImu(double start_time, Eigen::Quaternionf q_init, Eigen
   //      the circular_buffer so the IMU callback cannot invalidate them.
   std::vector<ImuMeas> imu_meas_window;
   if (!this->imuMeasFromTimeRange(start_time, sorted_timestamps.back(), imu_meas_window)) {
+    RCLCPP_WARN(this->get_logger(),
+      "integrateImu: no IMU window found for start_time=%.6f, end_time=%.6f — falling back to T_prior=T.",
+      start_time, sorted_timestamps.back());
     return empty;
   }
 
@@ -1424,7 +1451,7 @@ sensor_msgs::msg::Imu::SharedPtr dlio::OdomNode::transformImu(const sensor_msgs:
   static double prev_stamp = imu_stamp_secs;
   double dt = imu_stamp_secs - prev_stamp;
   prev_stamp = imu_stamp_secs;
-  
+
   if (dt == 0) { dt = 1.0/200.0; }
 
   // Transform angular velocity (will be the same on a rigid body, so just rotate to ROS convention)
@@ -1471,7 +1498,7 @@ void dlio::OdomNode::computeSpaciousness() {
   // compute range of points
   std::vector<float> ds;
 
-  for (int i = 0; i <= this->original_scan->points.size(); i++) {
+  for (size_t i = 0; i < this->original_scan->points.size(); i++) {
     float d = std::sqrt(pow(this->original_scan->points[i].x, 2) +
                         pow(this->original_scan->points[i].y, 2));
     ds.push_back(d);
@@ -1868,7 +1895,7 @@ void dlio::OdomNode::buildKeyframesAndSubmap(State vehicle_state) {
   std::transform(raw_covariances->begin(), raw_covariances->end(), transformed_covariances->begin(),
                [&Tf](const Eigen::Matrix4f& cov) { return Tf * cov * Tf.transpose(); });
 
-    
+
     ++this->num_processed_keyframes;
 
     lock.lock();
