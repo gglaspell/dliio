@@ -27,6 +27,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(pcl_conversions REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common io registration kdtree search features surface filters)
 find_package(Eigen3 REQUIRED)
 find_package(Threads REQUIRED)
@@ -73,24 +75,24 @@ add_definitions(${PCL_DEFINITIONS})
 # NanoFLANN
 add_library(nanoflann STATIC src/nano_gicp/nanoflann.cc)
 target_compile_definitions(nanoflann PRIVATE PCL_NO_PRECOMPILE)
-target_include_directories(nanoflann PUBLIC 
+target_include_directories(nanoflann PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(nanoflann PUBLIC ${PCL_LIBRARIES})
 
 # NanoGICP
-add_library(nano_gicp STATIC 
+add_library(nano_gicp STATIC
   src/nano_gicp/lsq_registration.cc
   src/nano_gicp/nano_gicp.cc
 )
 target_compile_definitions(nano_gicp PRIVATE PCL_NO_PRECOMPILE)
-target_include_directories(nano_gicp PUBLIC 
+target_include_directories(nano_gicp PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(nano_gicp PUBLIC 
-  nanoflann 
+target_link_libraries(nano_gicp PUBLIC
+  nanoflann
   ${PCL_LIBRARIES}
   ${OpenMP_LIBS}
 )
@@ -99,18 +101,18 @@ target_link_libraries(nano_gicp PUBLIC
 add_executable(dlio_odom_node src/dlio/odom_node.cc src/dlio/odom.cc)
 target_compile_definitions(dlio_odom_node PRIVATE PCL_NO_PRECOMPILE)
 target_compile_options(dlio_odom_node PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(dlio_odom_node 
+target_link_libraries(dlio_odom_node
   nano_gicp
   Threads::Threads
   ${PCL_LIBRARIES}
 )
-ament_target_dependencies(dlio_odom_node 
-  tf2_ros 
-  pcl_ros 
-  nav_msgs 
-  pcl_conversions 
-  rclcpp 
-  sensor_msgs 
+ament_target_dependencies(dlio_odom_node
+  tf2_ros
+  pcl_ros
+  nav_msgs
+  pcl_conversions
+  rclcpp
+  sensor_msgs
   geometry_msgs
 )
 
@@ -118,14 +120,14 @@ ament_target_dependencies(dlio_odom_node
 add_executable(dlio_map_node src/dlio/map_node.cc src/dlio/map.cc)
 target_compile_definitions(dlio_map_node PRIVATE PCL_NO_PRECOMPILE)
 target_compile_options(dlio_map_node PRIVATE ${OpenMP_CXX_FLAGS})
-target_link_libraries(dlio_map_node 
+target_link_libraries(dlio_map_node
   ${PCL_LIBRARIES}
   ${cpp_typesupport_target}
 )
-ament_target_dependencies(dlio_map_node 
-  tf2_ros 
-  pcl_ros 
-  pcl_conversions 
+ament_target_dependencies(dlio_map_node
+  tf2_ros
+  pcl_ros
+  pcl_conversions
   rclcpp
 )
 

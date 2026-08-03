@@ -64,4 +64,4 @@
     # intensityRRef  : reference range in metres (anchor; 1.0 is a safe default)
     odom/preprocessing/intensityAlpha: 2.0
     odom/preprocessing/intensityRRef: 1.0
-    odom/gicp/gradientKNeighbors: 10
+
