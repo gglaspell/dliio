@@ -50,7 +50,7 @@
 
     odom/gicp/photometricWeight: 0.1
     odom/gicp/gradientKNeighbors: 10
-    
+
     odom/geo/Kp: 4.5
     odom/geo/Kv: 11.25
     odom/geo/Kq: 4.0
@@ -58,3 +58,10 @@
     odom/geo/Kgb: 1.0
     odom/geo/abias_max: 5.0
     odom/geo/gbias_max: 0.5
+
+    # Intensity range correction
+    # intensityAlpha : falloff exponent (2.0 = inverse-square; tune per sensor)
+    # intensityRRef  : reference range in metres (anchor; 1.0 is a safe default)
+    odom/preprocessing/intensityAlpha: 2.0
+    odom/preprocessing/intensityRRef: 1.0
+

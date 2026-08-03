@@ -22,6 +22,8 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl_conversions/pcl_conversions.h>
 
+#include <mutex>
+
 class dlio::MapNode: public rclcpp::Node {
 
 public:
@@ -40,7 +42,6 @@ private:
   void savePCD(std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Request> req,
                std::shared_ptr<direct_lidar_inertial_odometry::srv::SavePCD::Response> res);
 
-
   rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr keyframe_sub;
   rclcpp::CallbackGroup::SharedPtr keyframe_cb_group, save_pcd_cb_group;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr map_pub;
@@ -49,6 +50,9 @@ private:
 
   pcl::PointCloud<PointType>::Ptr dlio_map;
   pcl::VoxelGrid<PointType> voxelgrid;
+
+  // FIX: protects dlio_map between callbackKeyframe and savePCD service threads
+  std::mutex map_mutex;
 
   std::string odom_frame;
 
