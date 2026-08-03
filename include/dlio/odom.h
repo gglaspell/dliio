@@ -382,6 +382,10 @@ private:
   double geo_abias_max_;
   double geo_gbias_max_;
 
+  // Intensity range correction
+  double intensity_alpha_;
+  double intensity_r_ref_;
+
   // FIX: max_keyframes_ caps the keyframe map size to prevent unbounded memory
   //      growth on long runs.  0 = disabled (default, backward compatible).
   int max_keyframes_;
