@@ -302,11 +302,12 @@ void NanoGICP<PointSource, PointTarget>::update_correspondences(const Eigen::Iso
                 correspondences_[i] = -1;
                 continue;
             }
-        }
-        mahalanobis_[i] = RCR_inv;
-        mahalanobis_[i](3, 3) = 0.0;
+            mahalanobis_[i] = RCR_inv;
+            mahalanobis_[i](3, 3) = 0.0;
         }
     }
+
+}
 
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::linearize(
