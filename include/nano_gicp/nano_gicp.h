@@ -61,8 +61,8 @@ protected:
   void update_correspondences(const Eigen::Isometry3f& trans);
 
   template<typename PointT>
-  void calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud, 
-                             nanoflann::KdTreeFLANN<PointT>& kdtree, 
+  void calculate_covariances(const typename pcl::PointCloud<PointT>::ConstPtr& cloud,
+                             nanoflann::KdTreeFLANN<PointT>& kdtree,
                              CovarianceList& covariances);
 
   bool estimate_spatial_intensity_gradient(int target_index, Eigen::Vector3f& gradient) const;
@@ -80,11 +80,16 @@ protected:
   int num_threads_;
   int k_correspondences_;
   RegularizationMethod regularization_method_;
-  
+
   float rotation_epsilon_;
   float lambda_factor_;
   float intensity_gradient_threshold_;
+  bool converged_ = false;
 
+  public:
+  bool hasConverged() const { return converged_; }
+
+  protected:
   std::unique_ptr<nanoflann::KdTreeFLANN<PointSource>> input_kdtree_;
   std::unique_ptr<nanoflann::KdTreeFLANN<PointTarget>> target_kdtree_;
 
@@ -96,10 +101,15 @@ protected:
   MahalanobisList mahalanobis_;
 
   float photometric_weight_;
+  float photometric_scale_;
   int gradient_k_neighbors_;
-  
-  std::vector<Eigen::Vector3f, Eigen::aligned_allocator<Eigen::Vector3f>> target_intensity_gradients_;
+
+  public:
+  void setPhotometricScale(float scale);
+
+  protected:
+  std::vector<Eigen::Vector3f> target_intensity_gradients_;
   std::vector<bool> gradient_valid_;
-};
+  };
 
 } // namespace nano_gicp

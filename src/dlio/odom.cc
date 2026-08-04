@@ -33,14 +33,19 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
 
   // FIX: slash-separated names match the YAML file.
   // Dot-separated names were silently ignored so config values never took effect.
-  double photometricWeight = this->declare_parameter<double>("odom/gicp/photometricWeight", 0.0);
+  this->photometric_weight_ = this->declare_parameter<double>("odom/gicp/photometricWeight", 0.0);
+  this->gicp.setPhotometricWeight(this->photometric_weight_);
   // Intensity range correction parameters
   this->intensity_alpha_ = this->declare_parameter("odom/preprocessing/intensityAlpha", 2.0);
   this->intensity_r_ref_ = this->declare_parameter("odom/preprocessing/intensityRRef", 1.0);
   int gradientKNeighbors   = this->declare_parameter<int>("odom/gicp/gradientKNeighbors", 10);
 
-  this->gicp.setPhotometricWeight(photometricWeight);
   this->gicp.setGradientKNeighbors(gradientKNeighbors);
+
+  double photometricScale = this->declare_parameter<double>("odom/gicp/photometricScale", 255.0);
+  this->gicp.setPhotometricScale(static_cast<float>(photometricScale));
+
+
 
   this->lidar_cb_group = this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   auto lidar_sub_opt = rclcpp::SubscriptionOptions();
@@ -112,19 +117,19 @@ dlio::OdomNode::OdomNode() : Node("dlio_odom_node") {
   this->concave_hull.setAlpha(this->keyframe_thresh_dist_);
   this->concave_hull.setKeepInformation(true);
 
-  this->gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
-  this->gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
-  this->gicp.setMaximumIterations(this->gicp_max_iter_);
-  this->gicp.setTransformationEpsilon(this->gicp_transformation_ep_);
-  this->gicp.setRotationEpsilon(this->gicp_rotation_ep_);
-  // this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+this->gicp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
+this->gicp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
+this->gicp.setMaximumIterations(this->gicp_max_iter_);
+this->gicp.setTransformationEpsilon(this->gicp_transformation_ep_);
+this->gicp.setRotationEpsilon(this->gicp_rotation_ep_);
+this->gicp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
-  this->gicp_temp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
-  this->gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
-  this->gicp_temp.setMaximumIterations(this->gicp_max_iter_);
-  this->gicp_temp.setTransformationEpsilon(this->gicp_transformation_ep_);
-  this->gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
-  // this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
+this->gicp_temp.setCorrespondenceRandomness(this->gicp_k_correspondences_);
+this->gicp_temp.setMaxCorrespondenceDistance(this->gicp_max_corr_dist_);
+this->gicp_temp.setMaximumIterations(this->gicp_max_iter_);
+this->gicp_temp.setTransformationEpsilon(this->gicp_transformation_ep_);
+this->gicp_temp.setRotationEpsilon(this->gicp_rotation_ep_);
+this->gicp_temp.setInitialLambdaFactor(this->gicp_init_lambda_factor_);
 
   pcl::Registration<PointType, PointType>::KdTreeReciprocalPtr temp;
   this->gicp.setSearchMethodSource(temp, true);
@@ -516,6 +521,23 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   pcl::PointCloud<PointType>::Ptr original_scan_ = std::make_shared<pcl::PointCloud<PointType>>();
   pcl::fromROSMsg(*pc, *original_scan_);
 
+  bool has_intensity = false;
+  for (const auto& field : pc->fields) {
+    if (field.name == "intensity") { has_intensity = true; break; }
+  }
+
+  static bool warned_missing_intensity = false;
+  if (!has_intensity && this->photometric_weight_ > 1e-8) {
+    if (!warned_missing_intensity) {
+      RCLCPP_WARN(this->get_logger(),
+          "photometricWeight > 0 but incoming cloud has no 'intensity' field; disabling photometric term.");
+      warned_missing_intensity = true;
+    }
+  }
+  this->gicp.setPhotometricWeight(0.0);
+  this->photometric_weight_ = 0.0;
+}
+
   // Remove NaNs
   std::vector<int> idx;
   original_scan_->is_dense = false;
@@ -526,16 +548,18 @@ void dlio::OdomNode::getScanFromROS(const sensor_msgs::msg::PointCloud2::SharedP
   // intensity_alpha_ : falloff exponent  (~2.0 for inverse-square law)
   // intensity_r_ref_ : reference range in metres (anchor point, typically 1.0 m)
   {
-    const float alpha   = static_cast<float>(this->intensity_alpha_);
-    const float r_ref   = static_cast<float>(this->intensity_r_ref_);
-    for (auto& pt : original_scan_->points) {
+
+  if (this->photometric_weight_ > 1e-8) {
+    const float alpha = static_cast<float>(this->intensity_alpha_);
+    const float r_ref  = static_cast<float>(this->intensity_r_ref_);
+    for (auto& pt : original_scan->points) {
       float r = std::sqrt(pt.x * pt.x + pt.y * pt.y + pt.z * pt.z);
       if (r > 0.f) {
-        pt.intensity = std::clamp(pt.intensity * std::pow(r / r_ref, alpha),
-                                  0.f, 255.f);
+        pt.intensity = std::clamp(pt.intensity * std::pow(r / r_ref, alpha), 0.f, 255.f);
       }
     }
   }
+}
 
   // Crop Box Filter
   this->crop.setInputCloud(original_scan_);
@@ -626,21 +650,44 @@ void dlio::OdomNode::preprocessPoints() {
   }
 
   // Voxel Grid Filter
-  if (this->vf_use_) {
-    pcl::PointCloud<PointType>::Ptr current_scan_ = std::make_shared<pcl::PointCloud<PointType>>(*this->deskewed_scan);
-    this->voxel.setInputCloud(current_scan_);
-    this->voxel.filter(*current_scan_);
-    this->current_scan = current_scan_;
+if (this->vf_use_) {
+  pcl::PointCloud<PointType>::Ptr input_scan =
+      std::make_shared<pcl::PointCloud<PointType>>(*this->deskewed_scan);
+  pcl::PointCloud<PointType>::Ptr current_scan_ =
+      std::make_shared<pcl::PointCloud<PointType>>();
+
+  this->voxel.setSaveLeafLayout(true);
+  this->voxel.setInputCloud(input_scan);
+  this->voxel.filter(*current_scan_);
+
+  // Re-attach averaged intensity per output voxel (VoxelGrid only averages x,y,z).
+  std::vector<float> intensity_sum(current_scan_->size(), 0.0f);
+  std::vector<int> intensity_count(current_scan_->size(), 0);
+  for (const auto& pt : input_scan->points) {
+    const Eigen::Vector3i ijk = this->voxel.getGridCoordinates(pt.x, pt.y, pt.z);
+    const int idx = this->voxel.getCentroidIndexAt(ijk);
+    if (idx >= 0 && idx < static_cast<int>(current_scan_->size())) {
+      intensity_sum[idx] += pt.intensity;
+      intensity_count[idx] += 1;
+    }
+  }
+  for (size_t i = 0; i < current_scan_->size(); ++i) {
+    if (intensity_count[i] > 0) {
+      current_scan_->points[i].intensity = intensity_sum[i] / intensity_count[i];
+    }
+  }
+  this->current_scan = current_scan_;
   } else {
-    this->current_scan = this->deskewed_scan;
+  this->current_scan = this->deskewed_scan;
   }
 
 }
 
 void dlio::OdomNode::deskewPointcloud() {
 
-  pcl::PointCloud<PointType>::Ptr deskewed_scan_ = std::make_shared<pcl::PointCloud<PointType>>(1, this->original_scan->points.size());
-  // deskewed_scan_->points.resize(this->original_scan->points.size());
+  pcl::PointCloud<PointType>::Ptr deskewed_scan_ =
+    std::make_shared<pcl::PointCloud<PointType>>(this->original_scan->points.size(), 1);
+  deskewed_scan->points.resize(this->original_scan->points.size());
   // individual point timestamps should be relative to this time
   double sweep_ref_time = rclcpp::Time(this->scan_header_stamp).seconds();
 

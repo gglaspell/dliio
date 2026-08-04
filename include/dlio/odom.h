@@ -386,6 +386,8 @@ private:
   double intensity_alpha_;
   double intensity_r_ref_;
 
+  double photometric_weight_
+
   // FIX: max_keyframes_ caps the keyframe map size to prevent unbounded memory
   //      growth on long runs.  0 = disabled (default, backward compatible).
   int max_keyframes_;

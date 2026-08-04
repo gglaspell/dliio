@@ -33,6 +33,7 @@ NanoGICP<PointSource, PointTarget>::NanoGICP() {
   this->rotation_epsilon_ = 1e-4;
   this->lambda_factor_ = 1e-9;
   this->photometric_weight_ = 0.0f;
+  this->photometric_scale_ = 255.0f;  // preserves current 8-bit behavior by default
   this->gradient_k_neighbors_ = 10;
   this->intensity_gradient_threshold_ = 1e-6;
 }
@@ -76,6 +77,11 @@ void NanoGICP<PointSource, PointTarget>::setPhotometricWeight(float weight) {
 }
 
 template <typename PointSource, typename PointTarget>
+void NanoGICP<PointSource, PointTarget>::setPhotometricScale(float scale) {
+  this->photometric_scale_ = (scale > 1e-6f) ? scale : 255.0f;
+}
+
+template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setGradientKNeighbors(int k) {
     this->gradient_k_neighbors_ = k;
 }
@@ -93,16 +99,30 @@ void NanoGICP<PointSource, PointTarget>::setRegularizationMethod(RegularizationM
 template <typename PointSource, typename PointTarget>
 void NanoGICP<PointSource, PointTarget>::setInputSource(const PointCloudSourceConstPtr& cloud) {
   pcl::Registration<PointSource, PointTarget>::setInputSource(cloud);
-
   if (!cloud || cloud->empty()) {
     source_covs_.clear();
+    this->source_density_ = 0.0f;
     return;
   }
-
   input_kdtree_.reset(new nanoflann::KdTreeFLANN<PointSource>(false));
   input_kdtree_->setInputCloud(cloud);
-
   calculate_covariances(cloud, *input_kdtree_, source_covs_);
+
+  // Minimal density restoration: mean radius to the farthest of the K neighbors.
+  double density_sum = 0.0;
+  int density_count = 0;
+  #pragma omp parallel for num_threads(num_threads_) reduction(+:density_sum, density_count)
+  for (int i = 0; i < static_cast<int>(cloud->size()); ++i) {
+    std::vector<int> k_indices(this->k_correspondences_);
+    std::vector<float> k_sq_distances(this->k_correspondences_);
+    int found = input_kdtree_->nearestKSearch(cloud->at(i), this->k_correspondences_, k_indices, k_sq_distances);
+    if (found > 1) {
+      density_sum += std::sqrt(k_sq_distances[found - 1]);
+      density_count += 1;
+    }
+  }
+  this->source_density_ =
+      (density_count > 0) ? static_cast<float>(density_sum / density_count) : 0.0f;
 }
 
 template <typename PointSource, typename PointTarget>
@@ -230,41 +250,30 @@ void NanoGICP<PointSource, PointTarget>::computeTransformation(
     Eigen::Isometry3f trans = Eigen::Isometry3f::Identity();
     trans.matrix() = guess;
 
-    for (int i = 0; i < this->max_iterations_; ++i) {
-        update_correspondences(trans);
-
-        Eigen::Matrix<float, 6, 6> H;
-        Eigen::Matrix<float, 6, 1> b;
-
-        linearize(trans, &H, &b);
-
-        // Add regularization
-        float lambda = (lambda_factor_ > 0) ? lambda_factor_ : 1e-6;
-        H.diagonal().array() += lambda;
-
-        Eigen::Matrix<float, 6, 1> dx = H.ldlt().solve(-b);
-
-        if(dx.hasNaN() || !dx.allFinite()) {
-            break;
-        }
-
-        // Apply transformation update
-        Eigen::Vector3f rot_vec = dx.head<3>();
-        float angle = rot_vec.norm();
-        if (angle > 1e-12f) {
-          trans.prerotate(Eigen::AngleAxisf(angle, rot_vec / angle));
-        }
-        trans.pretranslate(dx.tail<3>());
-
-        // Check convergence
-        if (dx.head<3>().norm() < rotation_epsilon_ &&
-            dx.tail<3>().norm() < transformation_epsilon_) {
+    bool converged = false;
+    for (int i = 0; i < this->max_iterations_; i++) {
+      update_correspondences(trans);
+      Eigen::Matrix<float, 6, 6> H;
+      Eigen::Matrix<float, 6, 1> b;
+      linearize(trans, &H, &b);
+      float lambda = (lambda_factor_ > 0) ? lambda_factor_ : 1e-6;
+      H.diagonal().array() += lambda;
+      Eigen::Matrix<float, 6, 1> dx = H.ldlt().solve(-b);
+      if (dx.hasNaN() || !dx.allFinite()) { break; }
+      Eigen::Vector3f rot_vec = dx.head<3>();
+      float angle = rot_vec.norm();
+      if (angle > 1e-12f) { trans.prerotate(Eigen::AngleAxisf(angle, rot_vec / angle)); }
+      trans.pretranslate(dx.tail<3>());
+      // Check convergence
+      if (dx.head<3>().norm() < rotation_epsilon_ && dx.tail<3>().norm() < transformation_epsilon_) {
+        converged = true;
         break;
-        }
+      }
     }
-
-    this->final_transformation_ = trans.matrix();
-    pcl::transformPointCloud(*this->input_, output, this->final_transformation_);
+  }
+  this->converged_ = converged;
+  this->final_transformation_ = trans.matrix();
+  pcl::transformPointCloud(*this->input_, output, this->final_transformation_);
 }
 
 template <typename PointSource, typename PointTarget>
@@ -352,18 +361,16 @@ void NanoGICP<PointSource, PointTarget>::linearize(
 
         // Photometric term
         if (use_photometric && gradient_valid_[target_index]) {
-            float intensity_diff = source_pt.intensity - target_pt.intensity;
-            Eigen::Vector3f gradient = target_intensity_gradients_[target_index];
-
-            if (gradient.norm() > 1e-6 && gradient.norm() < 100.0f) {
-                Eigen::Matrix<float, 1, 6> J_photometric;
-                J_photometric.block<1, 3>(0, 0) = -gradient.transpose() * skew(transformed_source);
-                J_photometric.block<1, 3>(0, 3) = gradient.transpose();
-
-                float weight = photometric_weight_;
-                H_private[thread_num] += weight * J_photometric.transpose() * J_photometric;
-                b_private[thread_num] += weight * J_photometric.transpose() * intensity_diff;
-            }
+          float intensity_diff = (source_pt.intensity - target_pt.intensity) / photometric_scale_;
+          Eigen::Vector3f gradient = target_intensity_gradients_[target_index] / photometric_scale_;
+          if (gradient.norm() > 1e-6 && gradient.norm() < 100.0f) {
+            Eigen::Matrix<float, 1, 6> J_photometric;
+            J_photometric.block<1, 3>(0, 0) = -gradient.transpose() * skew(transformed_source);
+            J_photometric.block<1, 3>(0, 3) = gradient.transpose();
+            float weight = photometric_weight_;
+            H_private[thread_num] += weight * J_photometric.transpose() * J_photometric;
+            b_private[thread_num] += weight * J_photometric.transpose() * intensity_diff;
+          }
         }
     }
 
